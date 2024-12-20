@@ -14,8 +14,6 @@ from datasets import load_dataset
 
 from lib.utils import Base
 
-skills = ["low", "medium", "high", "top"]
-
 
 class StreamingPGNSkillDataset(IterableDataset, Base):
     def __init__(self, files, seq_len, le, chess_move_labels, max_games_per_file):
@@ -39,12 +37,13 @@ class StreamingPGNSkillDataset(IterableDataset, Base):
 
         return self.pgns_to_tensor(iter_start, iter_end)
 
-   def parse_pgn_files_to_move_strings(self, pgn_files, pad_token="<PAD>"):
+    def parse_pgn_files_to_move_strings(self, pgn_files, pad_token="<PAD>"):
         for pgn_file in pgn_files:
             folder_name = os.path.basename(os.path.dirname(pgn_file))
             with open(pgn_file, "r") as pgn:
                 if vb(5):
                     print("\nopening:", pgn_file)
+
                 for _ in range(self.max_games_per_file):
                     game = chess.pgn.read_game(pgn)
                     if game is None:
@@ -54,75 +53,79 @@ class StreamingPGNSkillDataset(IterableDataset, Base):
                     moves = iter_to_move_strings(
                         game.mainline_moves(), self.seq_len, pad_token
                     )
+
                     yield folder_name, moves
 
     def pgns_to_tensor(self, iter_start, iter_end):
         for folder_name, result in self.parse_pgn_files_to_move_strings(
             self.files[iter_start:iter_end],
-            pad_token="<PAD>",  # todo: how to configure pad_token
         ):
-            yield torch.tensor(self.chess_move_labels.transform(result)), torch.tensor(self.le.transform(folder_name))
+            try:
+                yield (
+                    torch.tensor(self.chess_move_labels.transform(result)),
+                    torch.tensor(self.le.transform([folder_name])),
+                )
+            except:  # not recommended but don't know error type for 0000 move  # noqa: E722
+                if vb(10):
+                    print("Err:", result)
 
 
 @dataclass(kw_only=True)
-class PGNSquareDataConfig(DataConfig):
+class PGNSkillDataConfig(DataConfig):
     seq_len: int = 128
-    files_per_epoch: int = 50
-    directory: str = "resources/lichess_elite"
-    val_directory: str = "resources/lichess_elite_val"
-    max_games_per_file: Optional[int] = 99999
+    directory: str = "resources/binned"
+    max_games_per_file: Optional[int] = 999
     chess_move_labels: LabelEncoder = chess_move_labels
 
 
-class PGNSquareData(ClassifierData):
-    def __init__(self, c: PGNSquareDataConfig):
+class PGNSkillData(ClassifierData):
+    def __init__(self, c: PGNSkillDataConfig):
         super().__init__()
         self.save_config(c)
         self.le = LabelEncoder()
+        skills = ["low", "medium", "high", "top"]
         self.le.fit(skills)
 
         # setup files
-        self._files = [
+        self.files = [
             os.path.join(root, file)
             for root, _, files in os.walk(c.directory)
             for file in files
             if file.endswith(".pgn")
         ]
-        assert self._files
-        assert len(self._files) >= self.files_per_epoch
+        self.files.sort(key=lambda f: os.path.basename(f))
 
-        self.files = (
-            random.sample(self._files, self.files_per_epoch)
-            if c.files_per_epoch is not None
-            else self._files
-        )
+        assert self.files
 
+        # Split files into training and validation sets (1:6 split)
+        self.train_files = []
+        self.val_files = []
+
+        # Iterate through files and split them into train and validation sets based on a 1:6 ratio
+        for i, file in enumerate(self.files):
+            if i % 6 == 0:  # Every 6th file goes to validation set
+                self.val_files.append(file)
+            else:
+                self.train_files.append(file)
+
+        random.shuffle(self.train_files)
+
+        # Create the dataset with the 1:6 split
         self.dataset = StreamingPGNSkillDataset(
-            self.files,
+            self.train_files,
             c.seq_len,
-            self.square,
             self.le,
             chess_move_labels,
             c.max_games_per_file,
         )
 
-        # setup files for val
-        if c.val_directory:
-            self.val_files = [
-                os.path.join(root, file)
-                for root, _, files in os.walk(c.val_directory)
-                for file in files
-                if file.endswith(".pgn")
-            ]
-            assert self.val_files
-            self.val_set = StreamingPGNSkillDataset(
-                self.val_files,
-                c.seq_len,
-                self.square,
-                self.le,
-                chess_move_labels,
-                c.max_games_per_file,
-            )
+        self.val_set = StreamingPGNSkillDataset(
+            self.val_files,
+            c.seq_len,
+            self.le,
+            chess_move_labels,
+            c.max_games_per_file,
+        )
 
     def shuffle_files(self):
-        self.files = random.sample(self._files, self.files_per_epoch)
+        random.shuffle(self.train_files)

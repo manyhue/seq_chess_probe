@@ -12,6 +12,7 @@ class Module(nn.Module, Base):
     def __init__(self, **kwargs):
         super().__init__()
         self.save_attr()  # saves kwargs
+        self._prefix = ""
 
     ## Training section
     # Defaults for classification are used and should likely be overridden
@@ -28,7 +29,10 @@ class Module(nn.Module, Base):
     def filename(self):
         # join key-value pairs from self.c, each subclass should accept a c: Config and call save_config(c)
         param_str = "__".join([f"{k}={v}" for k, v in self.c.dict().items()])
-        return f"{self.__class__.__name__}__{param_str}"
+        return f"{self._prefix}{self.__class__.__name__}__{param_str}"
+
+    def prefix_filename(self, prefix):
+        self._prefix = prefix
 
     def pred(self, output):
         return output.squeeze(-1)
@@ -92,12 +96,24 @@ class ClassifierModule(Module):
     The base class of classification models.
     """
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.ignore_index = getattr(
+            self, "ignore_index", -100
+        )  # https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html
+
     def loss(self, outputs, Y, averaged=True):
         outputs = outputs.reshape(-1, outputs.shape[-1])
         Y = Y.reshape(
             -1,
         )
-        loss = F.cross_entropy(outputs, Y, reduction="mean" if averaged else "none")
+
+        loss = F.cross_entropy(
+            outputs,
+            Y,
+            reduction="mean" if averaged else "none",
+            ignore_index=self.ignore_index,
+        )
         return loss
 
     # Used in evaluation/metrics steps, which compare pred(output) and label
@@ -115,9 +131,7 @@ class SmoothClassifierModule(ClassifierModule):
         Y = Y.reshape(
             -1,
         )
-        loss = F.cross_entropy(
-            outputs, Y, reduction="mean" if averaged else "none", ignore_index=0
-        )
+        loss = F.cross_entropy(outputs, Y, reduction="mean" if averaged else "none")
         return loss
 
 

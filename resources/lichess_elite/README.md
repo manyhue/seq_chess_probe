@@ -1,0 +1,3 @@
+This dataset, both train and val variants, is not present in any of the training stages. There may be some overlap with the games from binned, which consist of a small subset of high rated games from a limited timeframe.
+This dataset is a more comprehensive version of binned, and spans 2020-2024. Thus, it is extremely unlikely any positions should overlap.
+In any case, the overlap is not dangerous: the data is used to train probes, for which the input as well the target labels are different.

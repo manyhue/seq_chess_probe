@@ -13,6 +13,18 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional, Union
 
 
+class RunEveryNth:
+    def __init__(self, n, func):
+        self.n = n
+        self.func = func
+        self.counter = 0
+
+    def __call__(self, *args, **kwargs):
+        self.counter += 1
+        if self.counter % self.n == 0:
+            return self.func(*args, **kwargs)
+        return None
+
 def is_notebook():
     # credit -> https://stackoverflow.com/a/39662359
     try:
@@ -343,7 +355,10 @@ def row_index(arr, indices):
     if isinstance(arr, pd.DataFrame):
         return arr.iloc[indices, :].values
     elif isinstance(arr, pl.DataFrame):
-        return arr.to_torch(dtype=pl.Float32)[indices]
+        try:
+            return arr.to_torch(dtype=pl.Float32)[indices]
+        except:  # mixed requires setting correct pl types i.e. int64, float32
+            return arr.to_torch()[indices]
     elif isinstance(arr, torch.Tensor):
         return arr[indices]
     else:

@@ -48,7 +48,9 @@ class TrainerConfig(OptimizerConfig):
     verbosity: int = 0
     train_mfs: MetricsFrame | List[MetricsFrame] = field(default_factory=list)
     val_mfs: MetricsFrame | List[MetricsFrame] = field(default_factory=list)
-    batch_end_callback: Callable | List[Callable] = field(default_factory=list)
+    batch_end_callback: Callable | List[Callable] = field(
+        default_factory=list
+    )  # provides trainer and loss
     epoch_end_callback: Callable | List[Callable] = field(default_factory=list)
     loss_every: float = 0.2  # record loss every n epochs
     flush_mfs: bool = True
@@ -63,6 +65,7 @@ class TrainerConfig(OptimizerConfig):
         ]
     ] = None
     optimizer: Optional[torch.optim.Optimizer] = None
+    plot_every: Optional[int] = None  # plot every n batches
 
 
 class Trainer(Base):
@@ -358,7 +361,11 @@ class Trainer(Base):
                 #     self.model_mf.update(self.model)
             self.train_batch_idx += 1
             for c in self.batch_end_callback:
-                c()
+                c(self, loss)
+
+            if self.plot_every and self.train_batch_idx % self.plot_every == 0:
+                for b in self.boards:
+                    b.draw_mfs()
 
             # debug
             # for param in self.model.named_parameters():
@@ -499,14 +506,17 @@ class Trainer(Base):
                 )
             )
 
+        def _pred_fn(x, *ys):
+            return (
+                self._model.pred(x),
+                *_default_pred(*ys),
+            )
+
         for mf in mfs:
             mf.set_flush_unit(1)
             mf.to(self.device)
             if self.set_pred:
-                mf.pred_fun = lambda x, *ys: (
-                    self._model.pred(x),
-                    *_default_pred(ys),
-                )
+                mf.pred_fun = _pred_fn
 
         output_mf = None
 
@@ -524,7 +534,7 @@ class Trainer(Base):
 
             def batch_fun(outputs, batch, batch_num):
                 for mf in mfs:
-                    mf.update(*outputs, *batch[1:], batch_num=batch_num)
+                    mf.update(outputs, *batch[1:], batch_num=batch_num)
 
         loader = loader if loader is not None else self.val_loader
 
@@ -552,7 +562,7 @@ class Trainer(Base):
         )
         return f"{self._model.filename()}__{param_str}"
 
-    def _save_model(self, params={}):
+    def _save_model(self, params={}, prefix=""):
         with change_dir(self.save_path):
             filename = (
                 self.filename + f"__epoch={self.first_epoch}-{self.epoch}" + ".pth"
@@ -564,7 +574,7 @@ class Trainer(Base):
                     "model": self.model.state_dict(),
                     "optimizer": self.optim.state_dict(),
                 },
-                filename,
+                prefix + filename,
             )
 
     # load a previous model to train further

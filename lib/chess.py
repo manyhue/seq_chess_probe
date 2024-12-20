@@ -22,6 +22,7 @@ def iter_to_move_strings(moves, seq_len, pad_token="<PAD>", return_board=False):
         if move is None or (board.piece_at(move.from_square) is None):
             print("Invalid move", board, move, move.from_square)
             break
+            # apparently a1a1, move= 0000 is accepted somehow?
         start_square = chess.square_name(move.from_square)
         end_square = chess.square_name(move.to_square)
 
@@ -396,6 +397,50 @@ def board_to_model_input(board, seq_len, pad_token="<PAD>"):
 
 chess_move_labels = LabelEncoder()
 chess_move_labels.fit(["<PAD>"] + generate_chess_moves())
+
+ep_squares = [
+    "a3",
+    "b3",
+    "c3",
+    "d3",
+    "e3",
+    "f3",
+    "g3",
+    "h3",  # 3rd row
+    "a6",
+    "b6",
+    "c6",
+    "d6",
+    "e6",
+    "f6",
+    "g6",
+    "h6",  # 6th row
+    "-",
+]
+
+fen_labels = LabelEncoder()
+fen_labels.fit(
+    [
+        "K",  # also castling indicators
+        "Q",
+        "R",
+        "B",
+        "N",
+        "P",  # White pieces
+        "k",
+        "q",
+        "r",
+        "b",
+        "n",
+        "p",  # Black pieces
+        "z",  # Empty squares (run length decode from digits)
+        "/",  # Row separator
+        " ",  # Space (separates fields in FEN)
+        "black",
+        "white",
+    ]
+    + ep_squares
+)
 
 
 def generate_random_game(length):

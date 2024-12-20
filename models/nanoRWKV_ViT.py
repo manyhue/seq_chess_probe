@@ -23,6 +23,7 @@ from torch.nn import functional as F
 from lib.modules import ClassifierModule, Module, SmoothClassifierModule
 from lib.utils import Config, dbg
 from models.nanoGPT import GPTConfig
+from models.nanoGPT_ViT import GPT_ViTConfig
 
 
 class LayerNorm(nn.Module):
@@ -203,8 +204,8 @@ class Block(nn.Module):
         return x
 
 
-class RWKV(ClassifierModule):
-    def __init__(self, config: GPTConfig):
+class RWKV_ViT(ClassifierModule):
+    def __init__(self, config: GPT_ViTConfig):
         super().__init__()
         assert config.vocab_size is not None
         assert config.seq_len is not None
@@ -224,10 +225,15 @@ class RWKV(ClassifierModule):
         # "UserWarning: functional_call was passed multiple values for tied weights.
         # This behavior is deprecated and will be an error in future versions"
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.transformer.wte.weight = (
-            self.lm_head.weight
-        )  # https://paperswithcode.com/method/weight-tying
+        if config.n_classes is None:
+            self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+            self.transformer.wte.weight = (
+                self.lm_head.weight
+            )  # https://paperswithcode.com/method/weight-tying
+        else:
+            self.lm_head = nn.Linear(
+                config.n_embd, config.n_classes, bias=False
+            )  # no tying
 
         # init all weights
         self.apply(self._init_weights)
@@ -261,7 +267,7 @@ class RWKV(ClassifierModule):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, output_len=None):
+    def forward(self, idx):
         device = idx.device
         b, t = idx.size()
         assert (
@@ -277,12 +283,7 @@ class RWKV(ClassifierModule):
             x = block(x)
         x = self.transformer.ln_f(x)
 
-        if output_len:
-            return self.lm_head(
-                x[:, -output_len:, :]
-            )  # used for inference-time mini-optimization: only forward the lm_head on the very last position, preserving time dimension.
-        out = self.lm_head(x)  # logits
-        return out
+        return self.lm_head(x[:, -1, :])
 
     def crop_seq_len(self, seq_len):
         # model surgery to decrease the block size if necessary
@@ -324,7 +325,7 @@ class RWKV(ClassifierModule):
             config_args["dropout"] = override_args["dropout"]
         # create a from-scratch initialized minGPT model
         config = GPTConfig(**config_args)
-        model = RWKV(config)
+        model = RWKV_ViT(config)
         sd = model.state_dict()
         sd_keys = sd.keys()
         sd_keys = [

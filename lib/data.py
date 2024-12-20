@@ -1,15 +1,11 @@
 from collections import Counter
-import random
 import re
-from sklearn.model_selection import KFold
 import torch
 from lib import dfs
 from lib.datasets.datasets import SubDataset
 from lib.utils import *
-import polars as pl
 import numpy as np
 import torch.utils.data as td
-import pandas as pd
 from lib.dfs import *
 from typing import Tuple
 from sklearn.preprocessing import LabelEncoder
@@ -453,7 +449,7 @@ class ClassifierData(Data):
         )
 
         if show_counts and test is False:
-            self.show_counts(test)
+            self.show_counts()
 
     def show_counts(self):
         assert all((self.counts, self.data, self.le))

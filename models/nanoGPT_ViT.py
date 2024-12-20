@@ -139,18 +139,18 @@ class Block(nn.Module):
 
 
 @dataclass(kw_only=True)
-class GPTConfig(Config):
+class GPT_ViTConfig(Config):
     seq_len: int = 1024
-    vocab_size: int = 50304  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
+    vocab_size: int  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    ignore_index: Optional[int] = 0
+    n_classes: int
 
 
-class GPT(ClassifierModule):
+class GPT_ViT(ClassifierModule):
     def __init__(self, config):
         self.save_config(config)
         super().__init__()
@@ -169,10 +169,9 @@ class GPT(ClassifierModule):
             )
         )
 
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.transformer.wte.weight = (
-            self.lm_head.weight
-        )  # https://paperswithcode.com/method/weight-tying
+        self.lm_head = nn.Linear(
+            config.n_embd, config.n_classes, bias=False
+        )  # no tying
 
         # init all weights
         self.apply(self._init_weights)
@@ -206,7 +205,7 @@ class GPT(ClassifierModule):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, output_len=None):
+    def forward(self, idx):
         device = idx.device
         b, t = idx.size()
         assert (
@@ -221,11 +220,7 @@ class GPT(ClassifierModule):
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x)
-        if output_len:
-            return self.lm_head(
-                x[:, -output_len:, :]
-            )  # used for inference-time mini-optimization: only forward the lm_head on the very last position, preserving time dimension.
-        return self.lm_head(x)  # logits
+        return self.lm_head(x[:, -1, :])
 
     def predict(self, idx):
         device = idx.device
@@ -256,46 +251,16 @@ class GPT(ClassifierModule):
             if hasattr(block.attn, "bias"):
                 block.attn.bias = block.attn.bias[:, :, :seq_len, :seq_len]
 
-    @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
-        """
-        Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
-        the sequence max_new_tokens times, feeding the predictions back into the model each time.
-        Most likely you'll want to make sure to be in model.eval() mode of operation for this.
-        """
-        for _ in range(max_new_tokens):
-            # if the sequence context is growing too long we must crop it at seq_len
-            idx_cond = (
-                idx if idx.size(1) <= self.c.seq_len else idx[:, -self.c.seq_len :]
-            )
-            # forward the model to get the logits for the index in the sequence
-            logits = self(idx_cond, output_len=1)
-            # pluck the logits at the final step and scale by desired temperature
-            # do not include pad token
-            logits = logits[:, -1, 1:] / temperature
-            # optionally crop the logits to only the top k options
-            if top_k is not None:
-                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits[logits < v[:, [-1]]] = -float("Inf")
-            # apply softmax to convert logits to (normalized) probabilities
-            probs = F.softmax(logits, dim=-1)
-            # sample from the distribution
-            idx_next = torch.multinomial(probs, num_samples=1) + 1
-            # append sampled index to the running sequence and continue
-            idx = torch.cat((idx, idx_next), dim=1)
-
-        return idx
-
 
 if __name__ == "__main__":
     # Import the necessary torch version for this model.
     # pip install torch==2.2.2
 
     # Create a GPT configuration object with the custom small chess vocabulary size.
-    gptconf = GPTConfig(vocab_size=32)
+    gptconf = GPT_ViTConfig(vocab_size=32)
 
     # Initialize the GPT model with the custom configuration.
-    model = GPT(gptconf)
+    model = GPT_ViT(gptconf)
 
     # Define a test input tensor with a batch size of 3 and a sequence length of 3,
     # containing indices that map to the custom vocabulary defined above.
