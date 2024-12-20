@@ -1,3 +1,4 @@
+import glob
 from torch import nn
 from torch.nn import functional as F
 
@@ -56,7 +57,17 @@ class Module(nn.Module, Base):
             filename or self.filename(),
         )
 
-    def load_from_pth(self, pth_path):
+    def load_from_pth(self, pth_path, epoch_glob=None):
+        # if epoch_glob:
+        #     with change_dir(self.save_path):
+        #         files = glob.glob(self.filename() + f"*__epoch={epoch_glob}.pth")
+        #         files.sort(key=os.path.getmtime)
+        #         if len(files) > 0:
+        #             print("Found older file:", files[-1])
+        #             checkpoint = torch.load(files[-1])
+        #         else:
+        #             raise Exception("No file found")
+        # else:
         checkpoint = torch.load(pth_path)
         state_dict = checkpoint["model"]
         unwanted_prefix = "_orig_mod."
@@ -104,7 +115,9 @@ class SmoothClassifierModule(ClassifierModule):
         Y = Y.reshape(
             -1,
         )
-        loss = F.cross_entropy(outputs, Y, reduction="mean" if averaged else "none")
+        loss = F.cross_entropy(
+            outputs, Y, reduction="mean" if averaged else "none", ignore_index=0
+        )
         return loss
 
 

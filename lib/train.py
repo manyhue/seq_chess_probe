@@ -133,17 +133,19 @@ class Trainer(Base):
             self.model = model.to(self.device)
         self._model = model
 
+        self.prepare_optimizers()
+
         if self.load_previous:
-            params = self._load_previous(model)
+            params = self._load_previous(
+                relaxed=(self.load_previous == "relaxed")
+            )  # if u want to change lr or something
             if params is not None:
                 self._loaded = True
                 # if not self.gpus and params["gpus"]:
                 #     self.model = self.model.module.to(
                 #         "cpu"
                 #     )  # unwrap from DataParallel if wrapped
-
         if not self._loaded:
-            self.prepare_optimizers()
             self.first_epoch = 0
 
         self.loss = getattr(self, "loss", model.loss)
@@ -200,7 +202,7 @@ class Trainer(Base):
                     mf.logger = self.logger
 
         # repeat with val
-        if self.val_loader:
+        if self.val_loader is not None:
             self.val_loss_mf = MetricsFrame(
                 [
                     from_te(
@@ -244,7 +246,7 @@ class Trainer(Base):
             set(mf.board for mf in mfs if mf.board is not None)
         )
 
-    def init(self, model=None, loaders=None, loss_board=None):
+    def init(self, model=None, loaders=None):
         """(Re)initialize model, loaders, metric frames. Will error if any are not already initialized.
         Useful if you want to further customize initialized objects such as trainer.val_loss_mf before calling trainer.fit(init=False).
         Set loss_board to False to disable loss plotting.
@@ -253,18 +255,12 @@ class Trainer(Base):
             model (_type_, optional): _description_. Defaults to None.
             loaders (_type_, optional): _description_. Defaults to None.
         """
-        if loaders:
-            self.train_loader = loaders[0]
-            self.val_loader = loaders[1] if len(loaders) > 1 else None
+        self.train_loader = loaders[0] if loaders else None
+        self.val_loader = loaders[1] if loaders and len(loaders) > 1 else None
         if model:
             self.prepare_model(model)
-        self.prepare_metrics(loss_board=loss_board)
 
-    def fit(
-        self,
-        model=None,
-        loaders=None,
-    ):
+    def fit(self, model=None, loaders=None, loss_board=None):
         """Calls trainer.init(model, data), and begins training.
         Plots metrics every epoch.
         Skips initialization if neither are supplied.
@@ -280,6 +276,7 @@ class Trainer(Base):
         if model is not None or loaders is not None:
             assert model is not None and loaders is not None
             self.init(model, loaders)
+        self.prepare_metrics(loss_board=loss_board)
 
         self.train_batch_idx = 0
         self.val_batch_idx = 0
@@ -382,12 +379,19 @@ class Trainer(Base):
                         mf.update(
                             outputs,
                             *Y,
-                            batch_num=self.train_batch_idx,
+                            batch_num=self.val_batch_idx,
                         )
                     if self.val_loss_mf:
                         self.val_loss_mf.update(
                             loss,
-                            batch_num=self.train_batch_idx,
+                            batch_num=(
+                                self.train_batch_idx
+                                if self.num_train_batches is None
+                                else self.train_batch_idx // self.num_train_batches
+                            )
+                            if self.num_val_batches
+                            is None  # track with train when iterable
+                            else self.val_batch_idx,
                         )
                 self.val_batch_idx += 1
                 if vb(6):
@@ -446,50 +450,6 @@ class Trainer(Base):
         self.plot("loss", l, train=False)
         return {"val_loss", l}
 
-    # def eval(
-    #     self,
-    #     torchevals=[],
-    #     batch_fun=None,
-    #     pred_funs=None,
-    #     loader=None,
-    #     loss=False,
-    # ):
-    #     """
-    #     Evaluates the model on a given loader and computes the metrics and/or loss.
-
-    #     Args:
-    #         torchevals (list, optional): List of evaluation metrics or metric groups to be updated during evaluation.
-    #                                     Example: [ms.torcheval.metrics.Cat()] or [[torcheval.metrics.BinaryAccuracy()], [torcheval.metrics.Cat()]]
-    #                                     For a metric in group i, it is updated with m.update(pred_funs[i](outputs),  *Y)
-    #         pred_funs (list, optional): List of prediction functions to be applied to the model outputs.
-    #                                     By default, will apply model.pred to group 1 if defined. If torch_evals is longer, the groups use output directly: i.e. m.update(outputs, *Y)
-    #         batch_fun (function, optional): Custom definition of function that is applied with batch_fun(outputs, *Y) to each batch. If not supplied, will update supplied torchevals using pred_funs, then output [predictions] or [predictions, loss].
-    #         loader (DataLoader, optional): The DataLoader to iterate through during evaluation. If None,
-    #                                             defaults to `self.val_loader`.
-    #         loss (bool, optional): Whether to output batch_loss in batch_fun. Defaults to False. A custom loss function can also be supplied.
-
-    #     Returns:
-    #         tuple: List of metrics, as many as are output by batch_fun. Tensor type metrics are concatenated, while others are arrays of len(loader).
-    #             updated metrics, and the second element is the computed loss if requested.
-    #     """
-    #     assert getattr(self, "_model", None) is not None
-
-    #     if loss is True:
-    #         loss = self.loss
-
-    #     if pred_funs is None:
-    #         pred_funs = [getattr(self._model, "pred", lambda x: x.squeeze(-1))]
-
-    #     if batch_fun is None:
-    #         batch_fun = infer.make_batch_fun(torchevals, pred_funs, loss)
-
-    #     return infer.infer(
-    #         self.model,
-    #         loader or self.val_loader,
-    #         batch_fun,
-    #         device=self.device,
-    #     )
-
     def eval(
         self,
         mfs: Union[MetricsFrame, List[MetricsFrame]] = [],
@@ -521,7 +481,7 @@ class Trainer(Base):
         if pred is not False:
             output_cols.append(
                 CatMetric(
-                    "pred",
+                    "preds",
                     update=lambda x, *ys: (pred_fn(x),),
                     num_outs=1,
                     device=self.device,
@@ -532,7 +492,7 @@ class Trainer(Base):
             loss_fn = loss if callable(loss) else self.loss
             output_cols.append(
                 CatMetric(
-                    "loss",
+                    "losses",
                     update=lambda x, *ys: (loss_fn(x, *ys),),
                     num_outs=1,
                     device=self.device,
@@ -562,17 +522,18 @@ class Trainer(Base):
 
         if batch_fun is None:
 
-            def batch_fun(*args, batch_num):
+            def batch_fun(outputs, batch, batch_num):
                 for mf in mfs:
-                    mf.update(*args, batch_num=batch_num)
+                    mf.update(*outputs, *batch[1:], batch_num=batch_num)
 
-        loader = loader or self.val_loader
+        loader = loader if loader is not None else self.val_loader
 
         infer.infer(
             self.model,
             loader,
             batch_fun,
             device=self.device,
+            prepare_batch=self.prepare_batch,
         )
 
         if flush_zero_flush_every_mfs:
@@ -607,9 +568,13 @@ class Trainer(Base):
             )
 
     # load a previous model to train further
-    def _load_previous(self, epoch="*"):  # glob string, i.e. 100-200
+    def _load_previous(self, epoch="*", relaxed=False):  # glob string, i.e. 100-200
         with change_dir(self.save_path):
-            files = glob.glob(self.filename + f"__epoch={epoch}.pth")
+            files = (
+                glob.glob(self._model.filename() + f"*__epoch={epoch}.pth")
+                if relaxed
+                else glob.glob(self.filename + f"__epoch={epoch}.pth")
+            )
             # look for the most recent file
             files.sort(key=os.path.getmtime)
             if len(files) > 0:
@@ -630,6 +595,7 @@ class Trainer(Base):
                 # continue on next epoch
                 self.first_epoch = checkpoint["epoch"] + 1
                 return checkpoint["params"]
+            print("Skipping load. No older file found.")
             return None
 
     # sweep_configuration = {

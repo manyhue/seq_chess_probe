@@ -20,8 +20,9 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from lib.modules import Module
+from lib.modules import ClassifierModule, Module, SmoothClassifierModule
 from lib.utils import Config
+from models.nanoGPT import GPTConfig
 
 
 class LayerNorm(nn.Module):
@@ -102,9 +103,9 @@ class RWKV_TimeMix_x051a(nn.Module):
             Q = 128
         else:
             Q = T
-            warnings.warn(
-                f'\n{"#"*80}\n\n{" "*38}Note\nThe GPT-mode forward() should only be called when we are training models.\nNow we are using it for inference for simplicity, which works, but will be very inefficient.\n\n{"#"*80}\n'
-            )
+            # warnings.warn(
+            #     f'\n{"#"*80}\n\n{" "*38}Note\nThe GPT-mode forward() should only be called when we are training models.\nNow we are using it for inference for simplicity, which works, but will be very inefficient.\n\n{"#"*80}\n'
+            # )
         assert T % Q == 0
 
         xx = self.time_shift(x) - x
@@ -202,19 +203,9 @@ class Block(nn.Module):
         return x
 
 
-@dataclass(kw_only=True)
-class GPTConfig(Config):
-    seq_len: int = 1024
-    vocab_size: int = 50304  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
-    n_layer: int = 12
-    n_head: int = 12
-    n_embd: int = 768
-    dropout: float = 0.0
-    bias: bool = True  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
 
-
-class GPT(Module):
-    def __init__(self, config):
+class RWKV(SmoothClassifierModule):
+    def __init__(self, config: GPTConfig):
         super().__init__()
         assert config.vocab_size is not None
         assert config.seq_len is not None
@@ -270,7 +261,7 @@ class GPT(Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, output_len=None):
         device = idx.device
         b, t = idx.size()
         assert (
@@ -286,20 +277,11 @@ class GPT(Module):
             x = block(x)
         x = self.transformer.ln_f(x)
 
-        if targets is not None:
-            # if we are given some desired targets also calculate the loss
-            logits = self.lm_head(x)
-            loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
-            )
-        else:
-            # inference-time mini-optimization: only forward the lm_head on the very last position
-            logits = self.lm_head(
-                x[:, [-1], :]
-            )  # note: using list [-1] to preserve the time dim
-            loss = None
-
-        return logits, loss
+        if output_len:
+            return self.lm_head(
+                x[:, -output_len:, :]
+            )  # used for inference-time mini-optimization: only forward the lm_head on the very last position, preserving time dimension.
+        return self.lm_head(x)  # logits
 
     def crop_seq_len(self, seq_len):
         # model surgery to decrease the block size if necessary
@@ -341,7 +323,7 @@ class GPT(Module):
             config_args["dropout"] = override_args["dropout"]
         # create a from-scratch initialized minGPT model
         config = GPTConfig(**config_args)
-        model = GPT(config)
+        model = RWKV(config)
         sd = model.state_dict()
         sd_keys = sd.keys()
         sd_keys = [
@@ -450,9 +432,10 @@ class GPT(Module):
                 idx if idx.size(1) <= self.c.seq_len else idx[:, -self.c.seq_len :]
             )
             # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond)
+            logits = self(idx_cond, output_len=1)
             # pluck the logits at the final step and scale by desired temperature
-            logits = logits[:, -1, :] / temperature
+            # do not include pad token
+            logits = logits[:, -1, 1:] / temperature
             # optionally crop the logits to only the top k options
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
@@ -460,7 +443,7 @@ class GPT(Module):
             # apply softmax to convert logits to (normalized) probabilities
             probs = F.softmax(logits, dim=-1)
             # sample from the distribution
-            idx_next = torch.multinomial(probs, num_samples=1)
+            idx_next = torch.multinomial(probs, num_samples=1) + 1
             # append sampled index to the running sequence and continue
             idx = torch.cat((idx, idx_next), dim=1)
 

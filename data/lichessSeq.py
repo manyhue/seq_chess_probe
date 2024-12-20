@@ -45,14 +45,17 @@ class PGNData(ClassifierData):
         train_set = train_set.filter(min_elo)
 
         def transform(row):
+            pgn_string = row["movetext"]
             return {
                 "game": torch.tensor(
                     self.le.transform(
-                        convert_pgn_to_move_strings(
-                            row["movetext"], seq_len=self.seq_len + 1, pad_token="<PAD>"
+                        iter_to_move_strings(
+                            chess.pgn.read_game(io.StringIO(pgn_string)),
+                            seq_len=self.seq_len + 1,
+                            pad_token="<PAD>",
                         )
                     )
-                )
+                ),
             }
 
         info_columns = train_set.column_names

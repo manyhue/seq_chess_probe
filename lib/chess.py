@@ -1,4 +1,5 @@
 import itertools
+import random
 import chess
 import chess.pgn
 import io
@@ -8,8 +9,10 @@ from lib.utils import dbg, vb
 # pgn = chess.pgn.read_game(io.StringIO(pgn_string)) -> pgn.mainline_moves()
 from sklearn.preprocessing import LabelEncoder
 
+def movetext_to_moves(movetext):
+    return chess.pgn.read_game(io.StringIO(movetext)).mainline_moves()
 
-def iter_to_move_strings(moves, seq_len, pad_token="<PAD>"):
+def iter_to_move_strings(moves, seq_len, pad_token="<PAD>", return_board=False):
     board = chess.Board()
 
     move_strings = []
@@ -22,18 +25,18 @@ def iter_to_move_strings(moves, seq_len, pad_token="<PAD>"):
         start_square = chess.square_name(move.from_square)
         end_square = chess.square_name(move.to_square)
 
+        move_string = (
+            f"{board.piece_at(move.from_square).symbol()}{start_square}{end_square}"
+        )
+
         if move.promotion:
             promotion_piece = {
-                chess.QUEEN: "Q",
-                chess.ROOK: "R",
-                chess.BISHOP: "B",
-                chess.KNIGHT: "N",
+                chess.QUEEN: "q",
+                chess.ROOK: "r",
+                chess.BISHOP: "b",
+                chess.KNIGHT: "n",
             }[move.promotion]
-            move_string = f"{board.piece_at(move.from_square).symbol()}{start_square}{end_square}={promotion_piece}"
-        else:
-            move_string = (
-                f"{board.piece_at(move.from_square).symbol()}{start_square}{end_square}"
-            )
+            move_string += promotion_piece
 
         move_strings.append(move_string)
 
@@ -41,35 +44,9 @@ def iter_to_move_strings(moves, seq_len, pad_token="<PAD>"):
     if seq_len is not None and len(move_strings) < seq_len:
         move_strings.extend([pad_token] * (seq_len - len(move_strings)))
 
+    if return_board:
+        return move_strings, board
     return move_strings
-
-
-def parse_pgn_files_to_move_strings(pgn_files, seq_len, pad_token="<PAD>"):
-    """
-    Parse a sequence of PGN files and generate move strings for each game.
-
-    Args:
-        pgn_files (list): List of file paths to PGN files.
-        seq_len (int): Maximum sequence length of moves.
-        pad_token (str): Token used to pad the sequences.
-
-    Yields:
-        list: A list of move strings for each game, padded to seq_len.
-    """
-
-    for pgn_file in pgn_files:
-        with open(pgn_file, "r") as pgn:
-            if vb(5):
-                print("\nopening:", pgn_file)
-            while True:
-                game = chess.pgn.read_game(pgn)
-                if game is None:
-                    break
-                if "FEN" in game.headers:
-                    continue
-                yield iter_to_move_strings(
-                    game.mainline_moves(), seq_len, pad_token
-                )  # todo: what sort of exceptions to handle?
 
 
 def generate_chess_moves():
@@ -111,10 +88,10 @@ def generate_chess_moves():
                 if capture_file in files:
                     pawn_moves.extend(
                         [
-                            f"P{file}7{capture_file}8=Q",
-                            f"P{file}7{capture_file}8=R",
-                            f"P{file}7{capture_file}8=B",
-                            f"P{file}7{capture_file}8=N",
+                            f"P{file}7{capture_file}8q",
+                            f"P{file}7{capture_file}8r",
+                            f"P{file}7{capture_file}8b",
+                            f"P{file}7{capture_file}8n",
                         ]
                     )
 
@@ -140,14 +117,73 @@ def generate_chess_moves():
                 if capture_file in files:
                     pawn_moves.extend(
                         [
-                            f"p{file}2{capture_file}1=Q",
-                            f"p{file}2{capture_file}1=R",
-                            f"p{file}2{capture_file}1=B",
-                            f"p{file}2{capture_file}1=N",
+                            f"p{file}2{capture_file}1q",
+                            f"p{file}2{capture_file}1r",
+                            f"p{file}2{capture_file}1b",
+                            f"p{file}2{capture_file}1n",
                         ]
                     )
 
         return pawn_moves
+
+    # corrected version
+    # def generate_pawn_moves():
+    #     pawn_moves = []
+
+    #     # White pawns
+    #     for file in files:
+    #         # Standard forward moves
+    #         for start_rank in "234567":
+    #             end_rank = str(int(start_rank) + 1)
+
+    #             # Promotions for white pawns
+    #             for capture_file in [chr(ord(file) - 1), file, chr(ord(file) + 1)]:
+    #                 if capture_file in files:
+    #                     if start_rank == "7":
+    #                         pawn_moves.extend(
+    #                             [
+    #                                 f"P{file}7{capture_file}8q",
+    #                                 f"P{file}7{capture_file}8r",
+    #                                 f"P{file}7{capture_file}8b",
+    #                                 f"P{file}7{capture_file}8n",
+    #                             ]
+    #                         )
+    #                     else:
+    #                         pawn_moves.append(
+    #                             f"P{file}{start_rank}{capture_file}{end_rank}"
+    #                         )
+
+    #             # Two-square moves from 2nd rank
+    #             if start_rank == "2":
+    #                 pawn_moves.append(f"P{file}2{file}4")
+
+    #     # Black pawns (similar logic, but moving down the board)
+    #     for file in files:
+    #         # Standard forward moves
+    #         for start_rank in "765432":
+    #             end_rank = str(int(start_rank) - 1)
+    #             # Promotions for white pawns
+    #             for capture_file in [chr(ord(file) - 1), file, chr(ord(file) + 1)]:
+    #                 if capture_file in files:
+    #                     if start_rank == "2":
+    #                         pawn_moves.extend(
+    #                             [
+    #                                 f"p{file}2{capture_file}1q",
+    #                                 f"p{file}2{capture_file}1r",
+    #                                 f"p{file}2{capture_file}1b",
+    #                                 f"p{file}2{capture_file}1n",
+    #                             ]
+    #                         )
+    #                     else:
+    #                         pawn_moves.append(
+    #                             f"p{file}{start_rank}{capture_file}{end_rank}"
+    #                         )
+
+    #             # Two-square moves from 2nd rank
+    #             if start_rank == "7":
+    #                 pawn_moves.append(f"p{file}2{file}4")
+
+    #     return pawn_moves
 
     def generate_knight_moves():
         knight_moves = []
@@ -336,18 +372,18 @@ def board_to_model_input(board, seq_len, pad_token="<PAD>"):
         start_square = chess.square_name(move.from_square)
         end_square = chess.square_name(move.to_square)
 
+        move_string = (
+            f"{board.piece_at(move.from_square).symbol()}{start_square}{end_square}"
+        )
+
         if move.promotion:
             promotion_piece = {
-                chess.QUEEN: "Q",
-                chess.ROOK: "R",
-                chess.BISHOP: "B",
-                chess.KNIGHT: "N",
+                chess.QUEEN: "q",
+                chess.ROOK: "r",
+                chess.BISHOP: "b",
+                chess.KNIGHT: "n",
             }[move.promotion]
-            move_string = f"{board.piece_at(move.from_square).symbol()}{start_square}{end_square}={promotion_piece}"
-        else:
-            move_string = (
-                f"{board.piece_at(move.from_square).symbol()}{start_square}{end_square}"
-            )
+            move_string += promotion_piece
 
         move_strings.append(move_string)
 
@@ -360,3 +396,84 @@ def board_to_model_input(board, seq_len, pad_token="<PAD>"):
 
 chess_move_labels = LabelEncoder()
 chess_move_labels.fit(["<PAD>"] + generate_chess_moves())
+
+
+def generate_random_game(length):
+    """
+    Generates a random chess game of the given length.
+
+    Args:
+        length (int): The number of moves to generate.
+
+    Returns:
+        chess.Board: The final board state after the random moves.
+        list: A list of moves in UCI format representing the game.
+    """
+    board = chess.Board()
+    moves = []
+
+    for _ in range(length):
+        legal_moves = list(board.legal_moves)
+        if (
+            not legal_moves
+        ):  # Check if there are no legal moves (checkmate or stalemate)
+            break
+
+        move = random.choice(legal_moves)
+        board.push(move)
+        moves.append(move.uci())
+
+    return board
+
+
+def generate_random_games_to_pgn(n_files, games_per_file=100, game_length=20):
+    """
+    Generates random chess games and saves them to PGN files.
+
+    Args:
+        games_per_file (int): Number of games per file.
+        n_files (int): Number of files to create.
+        game_length (int): Number of moves in each game.
+
+    Saves:
+        PGN files with games in the format: "games_<index>.pgn"
+    """
+    for file_index in range(n_files):
+        file_name = f"games_{file_index + 1}.pgn"
+        with open(file_name, "a") as pgn_file:
+            for _ in range(games_per_file):
+                board = generate_random_game(game_length)
+
+                # Convert the board to a PGN game
+                game = chess.pgn.Game()
+                node = game
+                for move in board.move_stack:
+                    node = node.add_variation(move)
+
+                # Write the game to the PGN file
+                print(game, file=pgn_file, end="\n\n")
+
+        print(f"Saved {games_per_file} games to {file_name}")
+
+
+# for debugging
+def moves_to_pgn(moves):
+    board = chess.Board()
+    game = chess.pgn.Game()
+    node = game
+
+    if isinstance(moves[0], int):
+        moves = chess_move_labels.inverse_transform(moves)
+
+    for move in moves:
+        uci_move = move[1:].lower()  # Convert to lowercase and strip promotion notation
+        if board.parse_uci(uci_move):
+            node = node.add_variation(board.push_uci(uci_move))
+    game.headers["Event"] = "?"
+    game.headers["Site"] = "?"
+    game.headers["Date"] = "????.??.??"
+    game.headers["Round"] = "?"
+    game.headers["White"] = "?"
+    game.headers["Black"] = "?"
+    game.headers["Result"] = "*"
+    print(str(game))

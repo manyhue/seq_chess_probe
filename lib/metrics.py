@@ -289,7 +289,9 @@ class MetricsFrame(Base):
         if self._flush_every != 0 and self._count % self._flush_every == 0:
             index = (
                 self._count
-                if self._batches_per_epoch is None or batch_num is None
+                if self._batches_per_epoch is None and batch_num is None
+                else batch_num
+                if self._batches_per_epoch is None
                 else self.index_fn(batch_num, self._batches_per_epoch)
             )  # maybe should not be optional
             self.flush(index)

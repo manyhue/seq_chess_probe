@@ -27,6 +27,7 @@ class DataConfig(Config):
     sampler: Optional[Any] = None
     transform: Any = None
     shuffle: Optional[bool] = None
+    prefetch_factor: tuple[int] = None
 
 
 # used in wandb
@@ -452,9 +453,9 @@ class ClassifierData(Data):
         )
 
         if show_counts and test is False:
-            self.show_counts(test=test)
+            self.show_counts(test)
 
-    def show_counts(self, test=False):
+    def show_counts(self):
         assert all((self.counts, self.data, self.le))
         print("data[-1] counts in label order from 0:")
         for k, v in self.counts:

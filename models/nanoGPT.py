@@ -17,7 +17,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from lib.modules import ClassifierModule
+from lib.modules import ClassifierModule, SmoothClassifierModule
 from lib.utils import Config, dbg
 
 
@@ -148,7 +148,7 @@ class GPTConfig(Config):
     bias: bool = True  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
 
 
-class GPT(ClassifierModule):
+class GPT(SmoothClassifierModule):
     def __init__(self, config):
         self.save_config(config)
         super().__init__()
@@ -268,7 +268,8 @@ class GPT(ClassifierModule):
             # forward the model to get the logits for the index in the sequence
             logits = self(idx_cond, output_len=1)
             # pluck the logits at the final step and scale by desired temperature
-            logits = logits[:, -1, :] / temperature
+            # do not include pad token
+            logits = logits[:, -1, 1:] / temperature
             # optionally crop the logits to only the top k options
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
@@ -276,7 +277,7 @@ class GPT(ClassifierModule):
             # apply softmax to convert logits to (normalized) probabilities
             probs = F.softmax(logits, dim=-1)
             # sample from the distribution
-            idx_next = torch.multinomial(probs, num_samples=1)
+            idx_next = torch.multinomial(probs, num_samples=1) + 1
             # append sampled index to the running sequence and continue
             idx = torch.cat((idx, idx_next), dim=1)
 

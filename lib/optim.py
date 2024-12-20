@@ -16,7 +16,7 @@ class WarmupCosineLR(LRScheduler):
         self.lr_decay_iters = lr_decay_iters
         self.lr = lr or self.base_lrs[0]
         self.min_lr = min_lr
-        super(WarmupCosineLR, self).__init__(optimizer, last_epoch, "deprecated")
+        super().__init__(optimizer, last_epoch, "deprecated")
 
     def get_lr(self):
         # Get the current iteration
