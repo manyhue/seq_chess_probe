@@ -109,7 +109,6 @@ def generate_chess_moves():
     def is_valid_square(square):
         return len(square) == 2 and square[0] in files and square[1] in ranks
 
-    # Pawn moves
     def generate_pawn_moves():
         pawn_moves = []
 
@@ -118,120 +117,55 @@ def generate_chess_moves():
             # Standard forward moves
             for start_rank in "234567":
                 end_rank = str(int(start_rank) + 1)
-                pawn_moves.append(f"P{file}{start_rank}{file}{end_rank}")
+
+                # Promotions for white pawns
+                for capture_file in [chr(ord(file) - 1), file, chr(ord(file) + 1)]:
+                    if capture_file in files:
+                        if start_rank == "7":
+                            pawn_moves.extend(
+                                [
+                                    f"P{file}7{capture_file}8q",
+                                    f"P{file}7{capture_file}8r",
+                                    f"P{file}7{capture_file}8b",
+                                    f"P{file}7{capture_file}8n",
+                                ]
+                            )
+                        else:
+                            pawn_moves.append(
+                                f"P{file}{start_rank}{capture_file}{end_rank}"
+                            )
 
                 # Two-square moves from 2nd rank
                 if start_rank == "2":
                     pawn_moves.append(f"P{file}2{file}4")
-
-                # Diagonal captures
-                for capture_file in [chr(ord(file) - 1), chr(ord(file) + 1)]:
-                    if capture_file in files:
-                        pawn_moves.append(
-                            f"P{file}{start_rank}{capture_file}{end_rank}"
-                        )
-
-            # Promotions for white pawns
-            for capture_file in [chr(ord(file) - 1), file, chr(ord(file) + 1)]:
-                if capture_file in files:
-                    pawn_moves.extend(
-                        [
-                            f"P{file}7{capture_file}8q",
-                            f"P{file}7{capture_file}8r",
-                            f"P{file}7{capture_file}8b",
-                            f"P{file}7{capture_file}8n",
-                        ]
-                    )
 
         # Black pawns (similar logic, but moving down the board)
         for file in files:
             # Standard forward moves
             for start_rank in "765432":
                 end_rank = str(int(start_rank) - 1)
-                pawn_moves.append(f"p{file}{start_rank}{file}{end_rank}")
+                # Promotions for white pawns
+                for capture_file in [chr(ord(file) - 1), file, chr(ord(file) + 1)]:
+                    if capture_file in files:
+                        if start_rank == "2":
+                            pawn_moves.extend(
+                                [
+                                    f"p{file}2{capture_file}1q",
+                                    f"p{file}2{capture_file}1r",
+                                    f"p{file}2{capture_file}1b",
+                                    f"p{file}2{capture_file}1n",
+                                ]
+                            )
+                        else:
+                            pawn_moves.append(
+                                f"p{file}{start_rank}{capture_file}{end_rank}"
+                            )
 
-                # Two-square moves from 7th rank
+                # Two-square moves from 2nd rank
                 if start_rank == "7":
                     pawn_moves.append(f"p{file}7{file}5")
 
-                # Diagonal captures
-                for capture_file in [chr(ord(file) - 1), chr(ord(file) + 1)]:
-                    if capture_file in files:
-                        pawn_moves.append(
-                            f"p{file}{start_rank}{capture_file}{end_rank}"
-                        )
-
-            for capture_file in [chr(ord(file) - 1), file, chr(ord(file) + 1)]:
-                if capture_file in files:
-                    pawn_moves.extend(
-                        [
-                            f"p{file}2{capture_file}1q",
-                            f"p{file}2{capture_file}1r",
-                            f"p{file}2{capture_file}1b",
-                            f"p{file}2{capture_file}1n",
-                        ]
-                    )
-
         return pawn_moves
-
-    # corrected version
-    # def generate_pawn_moves():
-    #     pawn_moves = []
-
-    #     # White pawns
-    #     for file in files:
-    #         # Standard forward moves
-    #         for start_rank in "234567":
-    #             end_rank = str(int(start_rank) + 1)
-
-    #             # Promotions for white pawns
-    #             for capture_file in [chr(ord(file) - 1), file, chr(ord(file) + 1)]:
-    #                 if capture_file in files:
-    #                     if start_rank == "7":
-    #                         pawn_moves.extend(
-    #                             [
-    #                                 f"P{file}7{capture_file}8q",
-    #                                 f"P{file}7{capture_file}8r",
-    #                                 f"P{file}7{capture_file}8b",
-    #                                 f"P{file}7{capture_file}8n",
-    #                             ]
-    #                         )
-    #                     else:
-    #                         pawn_moves.append(
-    #                             f"P{file}{start_rank}{capture_file}{end_rank}"
-    #                         )
-
-    #             # Two-square moves from 2nd rank
-    #             if start_rank == "2":
-    #                 pawn_moves.append(f"P{file}2{file}4")
-
-    #     # Black pawns (similar logic, but moving down the board)
-    #     for file in files:
-    #         # Standard forward moves
-    #         for start_rank in "765432":
-    #             end_rank = str(int(start_rank) - 1)
-    #             # Promotions for white pawns
-    #             for capture_file in [chr(ord(file) - 1), file, chr(ord(file) + 1)]:
-    #                 if capture_file in files:
-    #                     if start_rank == "2":
-    #                         pawn_moves.extend(
-    #                             [
-    #                                 f"p{file}2{capture_file}1q",
-    #                                 f"p{file}2{capture_file}1r",
-    #                                 f"p{file}2{capture_file}1b",
-    #                                 f"p{file}2{capture_file}1n",
-    #                             ]
-    #                         )
-    #                     else:
-    #                         pawn_moves.append(
-    #                             f"p{file}{start_rank}{capture_file}{end_rank}"
-    #                         )
-
-    #             # Two-square moves from 2nd rank
-    #             if start_rank == "7":
-    #                 pawn_moves.append(f"p{file}7{file}5")
-
-    #     return pawn_moves
 
     def generate_knight_moves():
         knight_moves = []
