@@ -6,3 +6,4 @@ resources/**/*.csv
 resources/**/*.parquet
 resources/extra
 out
+.mise.toml
