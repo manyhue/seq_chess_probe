@@ -1,53 +1,100 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import itertools
 import random
 import chess
 import chess.pgn
 import io
 
+import torch
+
 from lib.utils import dbg, vb
+
+# a move is piece+uci string
 
 # pgn = chess.pgn.read_game(io.StringIO(pgn_string)) -> pgn.mainline_moves()
 from sklearn.preprocessing import LabelEncoder
 
+import numpy as np
+
+
+def iter_to_evals(move_stack, loss=True, uci_path="/usr/bin/stockfish", time=0.2):
+    """
+    Calculate the centipawn loss for a given move in the chess game.
+
+    Parameters:
+    - board (chess.Board): The current chess board state.
+    - move (chess.Move): The move to be evaluated.
+    - stockfish_path (str): The path to the Stockfish engine executable.
+
+    Returns:
+    - float: Centipawn loss value.
+    """
+
+    # Initialize the Stockfish engine
+    board = chess.Board()
+    evals = []
+    with chess.engine.SimpleEngine.popen_uci(uci_path) as engine:
+        for move in move_stack:
+            # Get the evaluation before the move
+            eval = engine.analyse(board, chess.engine.Limit(time=time))[
+                "score"
+            ].relative.score(mate_score=10000)
+            evals.append(eval)
+            board.push(move)
+
+    if loss:
+        centipawn_losses = list(
+            map(
+                lambda eval_pair: abs(eval_pair[0] - eval_pair[1]),
+                zip(evals[:-1], evals[1:]),
+            )
+        )
+        return evals, centipawn_losses
+    else:
+        return evals
+
+
 def movetext_to_moves(movetext):
     return chess.pgn.read_game(io.StringIO(movetext)).mainline_moves()
 
-def iter_to_move_strings(moves, seq_len, pad_token="<PAD>", return_board=False):
+
+def iter_to_moves(move_stack, seq_len, pad_token="<PAD>", return_board=False):
+    """Converts iterator of chess.Move (i.e. board.move_stack) into a list of move strings based on the given board state."""
     board = chess.Board()
 
-    move_strings = []
+    moves = []
 
     # Iterate through each move in the PGN game
-    for move in itertools.islice(moves, 0, seq_len):
-        if move is None or (board.piece_at(move.from_square) is None):
-            print("Invalid move", board, move, move.from_square)
+    for move_obj in itertools.islice(move_stack, 0, seq_len):
+        if not move_obj:  # null move which apparently parses as a1a1/0000
+            if vb(7):
+                print("Invalid move", board, move_obj)
             break
-            # apparently a1a1, move= 0000 is accepted somehow?
-        start_square = chess.square_name(move.from_square)
-        end_square = chess.square_name(move.to_square)
+        start_square = chess.square_name(move_obj.from_square)
+        end_square = chess.square_name(move_obj.to_square)
 
-        move_string = (
-            f"{board.piece_at(move.from_square).symbol()}{start_square}{end_square}"
+        move = (
+            f"{board.piece_at(move_obj.from_square).symbol()}{start_square}{end_square}"
         )
 
-        if move.promotion:
+        if move_obj.promotion:
             promotion_piece = {
                 chess.QUEEN: "q",
                 chess.ROOK: "r",
                 chess.BISHOP: "b",
                 chess.KNIGHT: "n",
-            }[move.promotion]
-            move_string += promotion_piece
+            }[move_obj.promotion]
+            move += promotion_piece
 
-        move_strings.append(move_string)
+        moves.append(move)
 
-        board.push(move)
-    if seq_len is not None and len(move_strings) < seq_len:
-        move_strings.extend([pad_token] * (seq_len - len(move_strings)))
+        board.push(move_obj)
+    if seq_len is not None and len(moves) < seq_len:
+        moves.extend([pad_token] * (seq_len - len(moves)))
 
     if return_board:
-        return move_strings, board
-    return move_strings
+        return moves, board
+    return moves
 
 
 def generate_chess_moves():
@@ -182,7 +229,7 @@ def generate_chess_moves():
 
     #             # Two-square moves from 2nd rank
     #             if start_rank == "7":
-    #                 pawn_moves.append(f"p{file}2{file}4")
+    #                 pawn_moves.append(f"p{file}7{file}5")
 
     #     return pawn_moves
 
@@ -364,37 +411,6 @@ def generate_chess_moves():
     return moves
 
 
-def board_to_model_input(board, seq_len, pad_token="<PAD>"):
-    """Converts a list of moves (from move_stack) into a list of move strings based on the given board state."""
-    move_strings = []
-
-    # Iterate through each move in the board's move history (move_stack)
-    for move in board.move_stack[:seq_len]:
-        start_square = chess.square_name(move.from_square)
-        end_square = chess.square_name(move.to_square)
-
-        move_string = (
-            f"{board.piece_at(move.from_square).symbol()}{start_square}{end_square}"
-        )
-
-        if move.promotion:
-            promotion_piece = {
-                chess.QUEEN: "q",
-                chess.ROOK: "r",
-                chess.BISHOP: "b",
-                chess.KNIGHT: "n",
-            }[move.promotion]
-            move_string += promotion_piece
-
-        move_strings.append(move_string)
-
-    # Pad the move_strings list if necessary
-    if len(move_strings) < seq_len:
-        move_strings.extend([pad_token] * (seq_len - len(move_strings)))
-
-    return move_strings
-
-
 chess_move_labels = LabelEncoder()
 chess_move_labels.fit(["<PAD>"] + generate_chess_moves())
 
@@ -441,6 +457,11 @@ fen_labels.fit(
     ]
     + ep_squares
 )
+
+
+pieces = ["K", "Q", "N", "R", "B", "P"]
+piece_labels = LabelEncoder()
+piece_labels.fit([" "] + pieces + [x.lower() for x in pieces])
 
 
 def generate_random_game(length):
@@ -500,6 +521,8 @@ def generate_random_games_to_pgn(n_files, games_per_file=100, game_length=20):
 
         print(f"Saved {games_per_file} games to {file_name}")
 
+def moves_to_torch(moves):
+    return torch.tensor(chess_move_labels.transform(moves), dtype=torch.int64)
 
 # for debugging
 def moves_to_pgn(moves):

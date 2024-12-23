@@ -49,7 +49,7 @@ class PGNData(ClassifierData):
             return {
                 "game": torch.tensor(
                     self.le.transform(
-                        iter_to_move_strings(
+                        iter_to_moves(
                             chess.pgn.read_game(io.StringIO(pgn_string)),
                             seq_len=self.seq_len + 1,
                             pad_token="<PAD>",

@@ -14,8 +14,6 @@ from datasets import load_dataset
 
 from lib.utils import Base
 
-pieces = ["K", "Q", "N", "R", "B", "P"]
-
 
 class StreamingPGNSquareDataset(IterableDataset, Base):
     def __init__(
@@ -51,7 +49,7 @@ class StreamingPGNSquareDataset(IterableDataset, Base):
         Returns:
             Dictionary containing 'game' and 'piece' lists
         """
-        move_strings, board = iter_to_move_strings(
+        move_strings, board = iter_to_moves(
             moves,
             seq_len=self.seq_len,
             return_board=True,
@@ -124,7 +122,7 @@ class StreamingPGNSquareDataset(IterableDataset, Base):
             self.files[iter_start:iter_end],
         ):
             yield (
-                torch.tensor(self.chess_move_labels.transform(game)),
+                moves_to_torch(game),
                 torch.tensor(self.le.transform([piece])),
             )
 
@@ -144,8 +142,7 @@ class PGNSquareData(ClassifierData):
     def __init__(self, c: PGNSquareDataConfig):
         super().__init__()
         self.save_config(c)
-        self.le = LabelEncoder()
-        self.le.fit([" "] + pieces + [x.lower() for x in pieces])
+        self.le = piece_labels
 
         # setup files
         self._files = [

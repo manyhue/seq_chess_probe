@@ -2,6 +2,7 @@ import os
 import glob
 from pathlib import Path
 import sys
+from typing import Tuple
 import torch
 import torcheval
 from .metrics import _default_pred
@@ -43,7 +44,6 @@ class TrainerConfig(OptimizerConfig):
     gradient_clip_val: float = 0.0
     save_model_every: int = 0
     load_previous: bool = False
-    save_loss_threshold: float = 1.0
     logger: Optional[Any] = None
     verbosity: int = 0
     train_mfs: MetricsFrame | List[MetricsFrame] = field(default_factory=list)
@@ -52,11 +52,7 @@ class TrainerConfig(OptimizerConfig):
         default_factory=list
     )  # provides trainer and loss
     epoch_end_callback: Callable | List[Callable] = field(default_factory=list)
-    loss_every: float = 0.2  # record loss every n epochs
-    flush_mfs: bool = True
-    flush_epoch_units: bool = True  # treat
-    set_pred: bool = True  # use model.pred as the predictor function for metric frames
-    save_path: str | Path = "./out"
+    save_dir: str | Path = "./out"
     use_dataparallel: bool = False
     scheduler: Optional[
         Callable[
@@ -65,7 +61,19 @@ class TrainerConfig(OptimizerConfig):
         ]
     ] = None
     optimizer: Optional[torch.optim.Optimizer] = None
-    plot_every: Optional[int] = None  # plot every n batches
+    epoch_every: Optional[int] = (
+        None  # artificial epoch every n batches. Max_epochs still controls how many times to run the dataloader. So tqbar progress is not updated on these miniepochs. A function of using training time and update time to configure epoch_every and max_epochs would be friendly.
+    )
+    # Set epoch units for each mf with unit=None. This also controls whether to use batches or epochs for loss units. If you specifically want to set loss mf units seperately, use set_unit(1, "batch") after trainer.init
+    flush_loss_every: Optional[float] = (
+        0.2  # 1/plot points when epoch units. When batches_per_epoch is None, this should be an integer representing batches.
+    )
+    # the following are qol options that should be fine to not change
+    save_loss_threshold: float = 10
+    mf_epoch_units: bool = True  # 400 is around 4-8 min before first plot @ 1-3 sec per batch, ~ 30 hrs for 200 epochs.
+    flush_mfs: bool = True
+    set_pred: bool = True  # use model.pred as the predictor function for metric frames
+    plot_start: Tuple[int, int] = (20, 20)
 
 
 class Trainer(Base):
@@ -84,8 +92,12 @@ class Trainer(Base):
 
         self.board = None  # ProgressBoard(xlabel="epoch")
         self._best_loss = 9999  # save model loss threshold
-        if not self.flush_epoch_units:
-            assert isinstance(self.loss_every, int)  # set batch length to log mean loss
+        if not self.mf_epoch_units:
+            assert isinstance(
+                self.flush_loss_every, int
+            )  # set batch length to log mean loss
+        else:
+            self.flush_loss_every = self.flush_loss_every or c.max_epochs / 600
 
     def prepare_optimizers(self, **kwargs):
         self.optim = self.c.optimizer or torch.optim.AdamW(
@@ -96,7 +108,7 @@ class Trainer(Base):
 
         if self.scheduler:
             opts = TrainerSchedulerOpts(
-                steps_per_epoch=self.num_train_batches, epochs=self.max_epochs
+                steps_per_epoch=self.batches_per_epoch, epochs=self.max_epochs
             )
             self.sched = self.scheduler(self.optim, opts)
         else:
@@ -107,6 +119,12 @@ class Trainer(Base):
             return batch  # Handled by DataParallel
         else:
             return [a.to(self.device) for a in batch]  # Move batch to the first device
+
+    @property
+    def batches_per_epoch(self):
+        return (
+            self.epoch_every or self.num_train_batches
+        )  # perhaps should not be a property and rather be set in prepare_data
 
     @property
     def num_train_batches(self):
@@ -149,7 +167,7 @@ class Trainer(Base):
                 #         "cpu"
                 #     )  # unwrap from DataParallel if wrapped
         if not self._loaded:
-            self.first_epoch = 0
+            self.first_epoch = 1
 
         self.loss = getattr(self, "loss", model.loss)
         model.trainer = self
@@ -174,12 +192,17 @@ class Trainer(Base):
                     "loss",
                 )
             ],
-            flush_every=self.loss_every,
+            flush_every=self.flush_loss_every,
             train=True,
         )
 
-        if self.flush_epoch_units:
-            self.train_loss_mf.set_flush_unit(self.num_train_batches)
+        if self.mf_epoch_units:
+            if self.batches_per_epoch is None:
+                print("Warning: Cannot set epoch units since batches_per_epoch is None")
+            else:
+                self.train_loss_mf.set_unit(self.batches_per_epoch, "epoch")
+                for mf in self.train_mfs:
+                    mf.set_unit(self.batches_per_epoch, "epoch")
 
         self.train_loss_mf.to(self.device)
         if loss_board is not False:
@@ -197,14 +220,13 @@ class Trainer(Base):
                     self._model.pred(x),
                     *(a.squeeze(-1) for a in ys),
                 )
-            if self.flush_epoch_units:
-                mf.set_flush_unit(self.num_train_batches)
 
             if self.logger:
                 if mf.logger is None:
                     mf.logger = self.logger
 
         # repeat with val
+        self.val_loss_mf = None
         if self.val_loader is not None:
             self.val_loss_mf = MetricsFrame(
                 [
@@ -213,10 +235,21 @@ class Trainer(Base):
                         "loss",
                     ),
                 ],
-                flush_every=self.loss_every,
-            )
-            if self.flush_epoch_units:
-                self.val_loss_mf.set_flush_unit(self.num_val_batches)
+                flush_every=min(self.flush_loss_every, 1),
+            )  # val_loader is only called once per epoch
+
+            if self.mf_epoch_units:
+                if self.num_val_batches is None:
+                    print(
+                        "Warning: Cannot set val epoch units since batches_per_epoch is None."  # todo: provide synchronization for shared metric frames with boards.
+                    )
+                else:
+                    self.val_loss_mf.set_unit(
+                        self.batches_per_epoch, "epoch", scale_flush_interval=False
+                    )  # note that we use the train index to keep in step. This works better in the situation when num_val_batches is not defined: the loss plot with train and val batches has a longer train line. This does not plot a graph of the validation progress however. num_val_batches is undefined occurs iff both train and val uses batch units. In this case, to keep synchronization, one could consider supplying a custom diminishing scaling function from INIT_TRAIN_BATCH to train_batch_idx.
+                    for mf in self.val_mfs:
+                        mf.set_unit(self.num_val_batches, "epoch")
+
             self.val_loss_mf.to(self.device)
             if loss_board is not False:
                 loss_board.add_mf(self.val_loss_mf)
@@ -231,8 +264,6 @@ class Trainer(Base):
                         self._model.pred(x),
                         *(a.squeeze(-1) for a in ys),
                     )
-                if self.flush_epoch_units:
-                    mf.set_flush_unit(self.num_val_batches)
 
                 if self.logger:
                     if mf.logger is None:
@@ -281,67 +312,111 @@ class Trainer(Base):
             self.init(model, loaders)
         self.prepare_metrics(loss_board=loss_board)
 
-        self.train_batch_idx = 0
-        self.val_batch_idx = 0
+        # this is actually guaranteed by the default process
+        if self.train_loss_mf is not None and self.val_loss_mf is not None:
+            assert (
+                (self.train_loss_mf.unit in [None, 1])
+                == (self.val_loss_mf.unit in [None, 1])
+            ), "loss and train must be plotted on same units of epoch or batch. Batch units are used when mf_use_epoch units is False or when the training dataset is Iterable and epoch_every is unset."
 
-        epoch_bar = tqbar(
+        self.train_batch_idx = (self.first_epoch - 1) * (self.batches_per_epoch or 0)
+        self.val_batch_idx = (self.first_epoch - 1) * (
+            self.num_val_batches or 0
+        )  # continuing from batch not supported
+
+        self.batch_loss = 0
+        self.batch_val_loss = 0
+
+        self.epoch_bar = tqbar(
             range(self.first_epoch, self.first_epoch + self.max_epochs),
             desc="Epochs progress",
             unit="Epoch",
         )
 
-        _save_model_counter = 0
+        save_model_counter = 0
 
-        for self.epoch in epoch_bar:
-            epoch_loss = self._fit_epoch()
-            epoch_bar.set_description(
+        def post_epoch(epoch_loss):
+            nonlocal save_model_counter
+            for b in self.boards:
+                b.draw_mfs()
+
+            self.epoch_bar.set_description(
                 "Epochs progress [Loss: {:.3e}]".format(epoch_loss)
             )
+
             for c in self.epoch_end_callback:
-                c()
-            _save_model_counter += 1
+                self.__call_with_optional_self(c)
+
+            save_model_counter += 1
             if epoch_loss <= self._best_loss:
                 self._best_loss = epoch_loss
                 if (
                     self.save_model_every != 0
                     and epoch_loss <= self.save_loss_threshold
-                    and _save_model_counter >= self.save_model_every
+                    and save_model_counter >= self.save_model_every
                 ):
-                    self._save_model()
-                    _save_model_counter = 0
+                    self.save_model()
+                    save_model_counter = 0
+
+        for self.epoch in self.epoch_bar:
+            self._fit_epoch(post_epoch=post_epoch)
 
         for b in self.boards:
             b.close()  # Close as many plots as are associated, a bit wonky but works ok
-        if self.flush_mfs:
-            for mf in self.val_mfs + self.train_mfs:
-                try:
-                    mf.flush()
-                except AssertionError:
-                    pass
+        if self.flush_mfs:  # flush
+            for mf in self.val_mfs:
+                mf.flush(self.val_batch_idx)
+            for mf in self.train_mfs:
+                mf.flush(self.train_batch_idx)
+
         return self._best_loss
 
-    def _fit_epoch(self, train_loader=None, val_loader=None, y_len=1):
+    def __call_with_optional_self(self, func):
+        num_args = len(inspect.signature(func).parameters)
+        if num_args == 1:
+            return func(self)
+        else:
+            return func()
+
+    def _fit_epoch(
+        self,
+        train_loader=None,
+        val_loader=None,
+        y_len=1,
+        post_epoch=lambda epoch_loss: None,
+    ):
         train_loader = train_loader or self.train_loader
         val_loader = val_loader or self.val_loader
-        _init_batch_idx = self.train_batch_idx
+
+        _INIT_BATCH_IDX = self.train_batch_idx
 
         losses = 0
+
+        def validate_and_get_epoch_loss(losses):
+            if val_loader is not None:
+                return self._val_epoch(val_loader, y_len=y_len)
+            else:
+                mean_losses = losses / (self.train_batch_idx - _INIT_BATCH_IDX)
+                return mean_losses
+
         self.model.train()
-        for batch in train_loader:
-            batch = self.prepare_batch(batch)
+        for batch in map(
+            self.prepare_batch,
+            train_loader,
+        ):
             with torch.set_grad_enabled(True):
                 outputs = self.model(*batch[:-y_len])
                 Y = batch[-y_len:]
-                loss = self.loss(
-                    outputs, Y[-1].to(self.device)
-                )  # Sending to the main gpu generalizes to a distributed process
+                self.train_batch_loss = self.loss(outputs, Y[-1].to(self.device))
                 self.optim.zero_grad()
             with torch.no_grad():
-                loss.backward()
-                if val_loader is None:
-                    losses += loss
+                self.train_batch_loss.backward()
+                losses += self.train_batch_loss
+                self.train_batch_idx += 1
+
                 if self.gradient_clip_val > 0:
                     self.clip_gradients(self.gradient_clip_val, self.model)
+
                 self.optim.step()
                 if self.sched is not None:
                     self.sched.step()
@@ -350,68 +425,65 @@ class Trainer(Base):
                     m.update(
                         outputs,
                         *Y,
-                        batch_num=self.train_batch_idx,
+                        idx=self.train_batch_idx,
                     )
                 if self.train_loss_mf:
                     self.train_loss_mf.update(
-                        loss,
-                        batch_num=self.train_batch_idx,
+                        self.train_batch_loss,
+                        idx=self.train_batch_idx,
                     )
-                # if self.model_mf:
-                #     self.model_mf.update(self.model)
-            self.train_batch_idx += 1
+
+                if self.plot_start is not False:
+                    q, r = divmod(self.train_batch_idx, self.plot_start[1])
+                    if r == 0 and q < self.plot_start[0]:
+                        for b in self.boards:
+                            b.draw_mfs()
+
             for c in self.batch_end_callback:
-                c(self, loss)
+                self.__call_with_optional_self(c)
 
-            if self.plot_every and self.train_batch_idx % self.plot_every == 0:
-                for b in self.boards:
-                    b.draw_mfs()
+            if self.epoch_every and self.train_batch_idx % self.epoch_every == 0:
+                post_epoch(validate_and_get_epoch_loss(losses))
+                losses = 0
 
-            # debug
-            # for param in self.model.named_parameters():
-            #     if param[1].grad is None:
-            #         print("No gradient for parameter:", param)
-            #     elif torch.all(param[1].grad == 0):
-            #         print("Zero gradient for parameter:", param)
+        post_epoch(validate_and_get_epoch_loss(losses))
 
-        if val_loader is not None:
-            self.model.eval()  # Set the model to evaluation mode, this disables training specific operations such as dropout and batch normalization
-            for batch in map(self.prepare_batch, val_loader):
-                with torch.no_grad():
-                    outputs = self.model(*batch[:-y_len])
-                    Y = batch[-y_len:]
-                    loss = self.loss(outputs, Y[-1].to(self.device))
-                    losses += loss
-                    for mf in self.val_mfs:
-                        mf.update(
-                            outputs,
-                            *Y,
-                            batch_num=self.val_batch_idx,
-                        )
-                    if self.val_loss_mf:
-                        self.val_loss_mf.update(
-                            loss,
-                            batch_num=(
-                                self.train_batch_idx
-                                if self.num_train_batches is None
-                                else self.train_batch_idx // self.num_train_batches
-                            )
-                            if self.num_val_batches
-                            is None  # track with train when iterable
-                            else self.val_batch_idx,
-                        )
+    def _val_epoch(self, val_loader, y_len=1):
+        _INIT_VAL_BATCH_IDX = self.val_batch_idx
+        losses = 0
+
+        for batch in map(
+            self.prepare_batch,
+            val_loader,
+        ):
+            self.model.eval()
+            with torch.no_grad():
+                outputs = self.model(*batch[:-y_len])
+                Y = batch[-y_len:]
+                self.val_batch_loss = self.loss(outputs, Y[-1].to(self.device))
+                losses += self.val_batch_loss
+
+                for mf in self.val_mfs:
+                    mf.update(
+                        outputs,
+                        *Y,
+                        idx=self.val_batch_idx,
+                    )
                 self.val_batch_idx += 1
-                if vb(6):
-                    if self.epoch == self.first_epoch + self.max_epochs - 1:
-                        print("validation outputs", outputs)
 
-        epoch_loss = losses / (
-            self.num_train_batches or self.train_batch_idx - _init_batch_idx
-        )
-        for b in self.boards:
-            b.draw_mfs()
+        # we are only interested in mean loss across full validation set during training
+        mean_losses = losses / (self.val_batch_idx - _INIT_VAL_BATCH_IDX)
 
-        return epoch_loss
+        if self.val_loss_mf:
+            self.val_loss_mf.update(
+                mean_losses,
+                idx=self.train_batch_idx,
+            )
+
+            if vb(6):
+                if self.epoch == self.first_epoch + self.max_epochs - 1:
+                    print("validation outputs", outputs)
+        return mean_losses
 
     def clip_gradients(self, grad_clip_val, model):
         params = [p for p in model.parameters() if p.requires_grad]
@@ -425,8 +497,8 @@ class Trainer(Base):
         if train:
             if self.train_points_per_epoch == 0:  # use to disable plotting/storage
                 return
-            x = self.train_batch_idx / self.num_train_batches
-            n = self.num_train_batches // self.train_points_per_epoch
+            x = self.train_batch_idx / self.batches_per_epoch
+            n = self.batches_per_epoch // self.train_points_per_epoch
         else:
             x = self.epoch + 1
             if self.num_val_batches == 0:
@@ -464,7 +536,7 @@ class Trainer(Base):
         loss: Union[Callable, bool] = False,
         loader: torch.utils.data.DataLoader = None,
         batch_fun=None,
-        flush_zero_flush_every_mfs=True,
+        flush_mfs=True,
     ):
         """Evaluates the model on a given loader and updates the given MetricFrames on the output. Also computes loss/pred if specified.
 
@@ -477,9 +549,11 @@ class Trainer(Base):
             batch_fun (Callable, optional): _description_. Defaults to None.
 
         Returns:
-            A dictionary with loss and/or pred columns. None if loss and pred are both unspecified.
+            A dictionary with losses and/or preds columns. None if loss and pred are both unspecified.
         """
+
         assert getattr(self, "_model", None) is not None
+        flush_mfs = self.flush_mfs if flush_mfs is None else flush_mfs
         mfs = k_level_list(mfs, k=1)
 
         output_cols = []
@@ -513,7 +587,6 @@ class Trainer(Base):
             )
 
         for mf in mfs:
-            mf.set_flush_unit(1)
             mf.to(self.device)
             if self.set_pred:
                 mf.pred_fun = _pred_fn
@@ -522,7 +595,9 @@ class Trainer(Base):
 
         if loss is not False or pred is not False:
             output_mf = MetricsFrame(
-                output_cols, flush_every=0, xlabel=None, index_fn=lambda x, y: x
+                output_cols,
+                flush_every=0,
+                xlabel=None,
             )  # output concatenation at end
             mfs.append(output_mf)
 
@@ -534,7 +609,7 @@ class Trainer(Base):
 
             def batch_fun(outputs, batch, batch_num):
                 for mf in mfs:
-                    mf.update(outputs, *batch[1:], batch_num=batch_num)
+                    mf.update(outputs, *batch[1:])
 
         loader = loader if loader is not None else self.val_loader
 
@@ -546,10 +621,9 @@ class Trainer(Base):
             prepare_batch=self.prepare_batch,
         )
 
-        if flush_zero_flush_every_mfs:
+        if flush_mfs:
             for mf in mfs:
-                if mf.flush_every == 0:
-                    mf.flush()
+                mf.flush()
 
         if output_mf is not None:
             return mfs.pop().dict
@@ -562,11 +636,12 @@ class Trainer(Base):
         )
         return f"{self._model.filename()}__{param_str}"
 
-    def _save_model(self, params={}, prefix=""):
-        with change_dir(self.save_path):
-            filename = (
-                self.filename + f"__epoch={self.first_epoch}-{self.epoch}" + ".pth"
-            )
+    def save_model(self, params={}, prefix="", filename=None):
+        with change_dir(self.save_dir):
+            if filename is None:
+                filename = prefix + (
+                    self.filename + f"__epoch={self.first_epoch}-{self.epoch}" + ".pth"
+                )
             torch.save(
                 {
                     "params": params,
@@ -574,12 +649,28 @@ class Trainer(Base):
                     "model": self.model.state_dict(),
                     "optimizer": self.optim.state_dict(),
                 },
-                prefix + filename,
+                filename,
             )
+            if vb(3):
+                print(self.save_dir, filename)
+
+    # def load_previous(self, epoch="*", relaxed=False):  # glob string, i.e. 100-200
+    #     assert self._model
+    #     with change_dir(self.save_dir):
+    #         print(self.save_dir)
+    #         print(self.filename + f"__epoch={epoch}.pth")
+    #         files = (
+    #             glob.glob(self._model.filename() + f"*__epoch={epoch}.pth")
+    #             if relaxed
+    #             else glob.glob(self.filename + f"__epoch={epoch}.pth")
+    #         )
+    #         print(files)
 
     # load a previous model to train further
     def _load_previous(self, epoch="*", relaxed=False):  # glob string, i.e. 100-200
-        with change_dir(self.save_path):
+        with change_dir(self.save_dir):
+            if vb(3):
+                print(self._model.filename() + f"*__epoch={epoch}.pth")
             files = (
                 glob.glob(self._model.filename() + f"*__epoch={epoch}.pth")
                 if relaxed
@@ -590,9 +681,8 @@ class Trainer(Base):
             if len(files) > 0:
                 print("Found older file:", files[-1])
                 print("Loading.....")
-                checkpoint = torch.load(
-                    files[-1]
-                )  # todo: how to assign devices with dp/ddp
+                # todo: how to assign devices with dp/ddp
+                checkpoint = torch.load(files[-1])
 
                 state_dict = checkpoint["model"]
                 unwanted_prefix = "_orig_mod."
@@ -607,68 +697,3 @@ class Trainer(Base):
                 return checkpoint["params"]
             print("Skipping load. No older file found.")
             return None
-
-    # sweep_configuration = {
-    #     "method": "random",
-    #     "name": "sweep",
-    #     "metric": {"goal": "minimize", "name": "loss"},
-    #     "parameters": {
-    #         "batch_size": {"values": [16, 32, 64]},
-    #         "max_epochs": {"values": [5, 10, 15]},
-    #         "lr": {"max": 0.1, "min": 0.0001},
-    #     },
-    # }
-
-
-# # Create the sweep in WandB
-# sweep_id = wandb.sweep(sweep_configuration, project="my_project")
-
-# # Define different datasets (Replace these with actual datasets or dataset paths)
-# datasets = [
-#     "dataset_1",
-#     "dataset_2",
-#     "dataset_3",
-#     "dataset_4",
-#     "dataset_5",
-#     "dataset_6",
-# ]
-
-
-# # Define the function that will train and log results for each sweep
-# def train_rnn(config):
-#     # Initialize the run for the sweep
-#     wandb.init(config=config)
-
-#     # Select the dataset for the current run
-#     dataset = config.dataset_name
-#     print(f"Training on {dataset} dataset...")
-
-#     # Extract hyperparameters from the config
-#     learning_rate = config.learning_rate
-#     batch_size = config.batch_size
-#     hidden_size = config.hidden_size
-#     dropout = config.dropout
-
-#     # Simulate training and log metrics (replace with actual model training)
-#     for epoch in range(10):
-#         accuracy = random.uniform(0.7, 1.0)  # Simulated accuracy
-#         loss = random.uniform(0.1, 1.0)  # Simulated loss
-
-#         # Log the metrics
-#         wandb.log({"epoch": epoch + 1, "accuracy": accuracy, "loss": loss})
-
-#         # Simulate epoch duration
-#         time.sleep(0.5)
-
-#     wandb.finish()
-
-
-# # Run sweeps for each dataset, passing the dataset name for each experiment
-# for dataset in datasets:
-#     # Update the config for each dataset
-#     config = {
-#         "dataset_name": dataset,
-#     }
-
-#     # Start the sweep agent to run the experiment for the current dataset
-#     wandb.agent(sweep_id, function=train_rnn, count=1)  # Run 1 experiment per dataset

@@ -3,5 +3,6 @@
 *.egg-info
 resources/**/*.pgn
 resources/**/*.csv
+resources/**/*.parquet
 resources/extra
 out

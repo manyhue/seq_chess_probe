@@ -1,39 +1,38 @@
-import asyncio
 import random
-from typing import Callable, List, Optional, Any
+from typing import Callable, List, Optional, Any, Union
 import chess
-import ipywidgets as widgets
-import torch
-from lib.chess import iter_to_move_strings, chess_move_labels
-from lib.utils import dbg, is_notebook
+from lib.chess import iter_to_moves, chess_move_labels, moves_to_torch
+from lib.utils import Base, dbg, is_notebook, vb
+from lib.modules import Module
 
-if is_notebook():
-    from IPython.display import display, clear_output
-
-
-class ChessGame:
-    def __init__(self, model, le=chess_move_labels, _ai_illegal_attempts=5):
-        """Initialize with a model and decoder"""
-        self.model = model
-        self.le = le
-        self.device = next(model.parameters()).device
-        self._ai_illegal_attempts = _ai_illegal_attempts
-        self.model_name = model.filename().split("_")[0]
-        self.notebook = False
-
-    def draw_game_board(self, board):
-        """Draw the current game board using chesslib"""
-        if is_notebook():
-            from IPython.display import display, clear_output
-
-            boardsvg = chess.svg.board(board, size=350)
-            clear_output(wait=True)
-            display(boardsvg)
+# just for names
+class ChessPlayer(Base):
+    def __init__(
+        self, player: Union[None, Module], name=None, max_illegal=5, max_samples=5
+    ):
+        self.save_attr()
+        if name is None:
+            if player is None:  # user
+                self.name = ""
+            else:
+                self.name = player.filename().split("_")[0]
         else:
-            print(board)
+            self.name = name
 
-    @classmethod
-    def get_move_from_user(cls, board):
+        if player is not None:
+            self._device = next(player.parameters()).device
+
+        self.illegal_history = []
+
+    def get_move(self, board):
+        return (
+            self.get_move_from_user(board)
+            if self.player is None
+            else self.get_move_from_ai(board)
+        )
+
+    # san format
+    def get_move_from_user(self, board):
         """Prompt the user for a move (if they're white) using widgets or questionary"""
         # if is_notebook():
         #     # Create a text input widget
@@ -61,74 +60,133 @@ class ChessGame:
 
         # else:
         # Use questionary in non-notebook environment
-        move_input = input("Enter your move (e.g., e2e4):")
 
-        # Ensure the move is valid and push it to the board
-        try:
-            move = board.push_san(move_input)
-        except ValueError:
-            if move == "":
-                print("Null move entered. Resigning...")
-                return None
-            print("Invalid move! Please try again.")
-            return cls.get_move_from_user(board)
+        # Ensure the move is valid and push it to the self.board
+        for _ in range(self.max_illegal):
+            try:
+                move_input = input("Enter your move (e.g., e2e4):")
+
+                if move_input.lower() == "r":
+                    print("Resigning...")
+                    return None
+
+                move = board.parse_san(move_input)
+                break
+            except ValueError:
+                print("Invalid move! Please try again.")
+        else:
+            print("All attempts failed. Resigning...")
 
         return move
 
-    # multinomial
-    def model_prediction(self, board, model):
-        move_strings = iter_to_move_strings(
-            board.move_stack,
-            seq_len=None,
-            pad_token=self.le.inverse_transform([0])[0],
-        )
-        pred = model.generate(
-            torch.tensor(self.le.transform(move_strings)).view(1, -1).to(self.device), 1
-        ).cpu()  # Replace with actual model prediction
-
-        decoded = self.le.inverse_transform(pred.flatten())[-1]
-        return decoded
-
-    def get_move_from_ai(
-        self, board, max_tries=5, max_samples=5, move_hist=False, model=None
-    ):
-        if model is None:
-            model = self.model
-            model_name = self.model_name
-        else:
-            model_name = model.filename().split("_")[0]
+    def get_move_from_ai(self, board):
         seen = set()
         move_str = None
-        while len(seen) < max_tries:
+        move = None
+        while len(seen) < self.max_illegal:
             count = 0
             # Get the predicted move
             while move_str is None or move_str in seen:
-                if count < max_samples:
-                    print("thinking...")
-                    move_str = self.model_prediction(board, model)
+                if count < self.max_samples:
+                    if vb(7):
+                        print("thinking...")
+                    moves = iter_to_moves(
+                        board.move_stack,
+                        seq_len=None,
+                    )
+                    inputs = moves_to_torch(moves).view(1, -1).to(self._device)
+                    move_str = self._model_prediction(self.player, inputs)
                     count += 1
                 else:
                     print("Generation of multiple legal moves failed. Resigning...")
+                    self.illegal_history.append(seen)
                     return None
             try:
                 # Try to make the move
-                move = board.push_uci(move_str[1:])  # uci doesn't include the piece
-                if isinstance(move_hist, list):
-                    seen.add(move)
-                    move_hist.append(seen)
-                return move
+                move = board.parse_san(move_str[1:])  # uci doesn't include the piece
+                break
             except ValueError:
                 # If the move is illegal, retry with a new prediction
                 seen.add(move_str)
-                print(f"{model_name} attempted an illegal move: {move_str}.")
+                if vb(6):
+                    print(f"{self.name} attempted an illegal move: {move_str}.")
+        else:
+            print("All attempts failed. Resigning...")
 
-        # If all 5 attempts fail, resign
-        print("All attempts failed. Resigning...")
+        self.illegal_history.append(seen)
+        return move
 
-        return None  # Resigning means no valid move was made
+    # multinomial
+    @staticmethod
+    def _model_prediction(model, inputs):
+        pred = model.generate(inputs, 1).cpu()  # Replace with actual model prediction
+
+        decoded = chess_move_labels.inverse_transform(pred.flatten())[-1]
+        return decoded
+
+
+class ChessGame:
+    def __init__(
+        self,
+        p2_model,
+        p1_model=None,
+        p1_max_illegal=5,
+        p2_max_illegal=5,
+        draw_board=None,
+    ):
+        """Initialize with a model and decoder"""
+        self.players = [
+            ChessPlayer(p1_model, max_illegal=p1_max_illegal),
+            ChessPlayer(p2_model, max_illegal=p2_max_illegal),
+        ]
+
+        if self.players[0].name == "":
+            if self.players[1].name == "":
+                self.players[0].name = "P1"
+            else:
+                self.players[0].name = "You"
+        if self.players[1].name == "":
+            self.players[1].name = "P2"
+        if self.players[1].name == self.players[0].name:
+            self.players[1].name += "(1)"
+
+        self.notebook = False
+        self.board = None
+
+        self.draw_board = (
+            draw_board
+            if isinstance(draw_board, str)
+            else "svg"
+            if is_notebook()
+            else "print"
+        )
+
+    def draw_game_board(self):
+        """Draw the current game self.board using chesslib"""
+        if self.draw_board == "svg":
+            from IPython.display import display, clear_output
+
+            boardsvg = chess.svg.board(self.board, size=350)
+            clear_output(wait=True)
+            display(boardsvg)
+        elif self.draw_board == "print":
+            print(self.board)
+
+    @property
+    def player_to_move(self):
+        return (self.turn - (1 if self.p1_white else 0)) % 2
+
+    def get_move(self):
+        player = self.players[self.player_to_move]
+        move = player.get_move(self.board)
+        if move is None:
+            self.game_over = -1
+        else:
+            self.board.push(move)
 
     # todo: refactor
-    def check_game_status(board):
+    def check_game_status(self):
+        board = self.board
         if board.is_stalemate():
             return "Stalemate: The game is a draw due to no legal moves and no check."
         elif board.is_insufficient_material():
@@ -136,7 +194,7 @@ class ChessGame:
         elif board.is_seventyfive_moves():
             return "Draw: 75-move rule reached without progress."
         elif board.is_fivefold_repetition():
-            return "Draw: Fivefold repetition rule reached."
+            return "Draw: Fivefold repetition rule reached."  # autodraw whereas 3fold must be claimed
         elif board.is_variant_draw():
             return "Draw: Variant-specific draw rule."
         elif board.is_checkmate():
@@ -145,74 +203,69 @@ class ChessGame:
         else:
             return "Game is ongoing."
 
-    def play(
-        self,
-        player_white=True,
-        self_move_fn: Optional[Callable[[chess.Board], Any]] = None,  # type: ignore
-        fen=None,
-        verbose=False,
-        return_board=False,
-    ):
-        def get_outcome():
-            if (outcome := board.outcome()) is not None:
-                return outcome
-            nonlocal game_over
+    # returns an easy to understand outcome
+    def get_outcome(self):
+        result = (
+            chess.Termination.VARIANT_DRAW
+            if self.game_over == 0
+            else chess.Termination.VARIANT_WIN  # use variant_win to denote side who wins
+            if self.game_over is not None
+            else outcome.termination
+            if (outcome := self.board.outcome())
+            else None  # None for continuing
+        )
+        if result is None:
+            return None
+        elif result in (chess.Termination.VARIANT_WIN, chess.Termination.CHECKMATE):
             return (
-                chess.Termination.VARIANT_WIN
-                if game_over == 1
-                else chess.Termination.VARIANT_LOSS
-                if game_over == -1
-                else chess.Termination.VARIANT_DRAW
-            )
+                result.name,
+                (-1 if self.player_to_move == 0 else 1),
+            )  # +1 if P1 wins
+        else:
+            return (result.name, 0)
 
-        game_over = None
-        """Main function to run the chess game with interaction and model prediction"""
-        # Initialize the board with the provided FEN or default to the start position
-        board = chess.Board(fen) if fen else chess.Board()
-        their_move_hist = []
+    def init_game(self, fen=None, p1_white=True):
+        if fen == "":
+            self.board = chess.Board()
+        elif fen is None:
+            self.board = self.board or chess.Board()
+        else:
+            self.board = chess.Board(fen)
+        self.game_over = None
+        self.turn = 1
+        self.p1_white = p1_white
 
-        if not callable(self_move_fn):
-            self_move_fn = self.get_move_from_user
-        elif player_white:
-            self.draw_game_board(board)
-            board.push(random.choice(list(board.legal_moves)))  # initial move for model
+    # 1 indexed
+    def set_player(self, model, player=1, max_illegal=None):
+        self.player[player - 1] = ChessPlayer(
+            model,
+            max_illegal=max_illegal or self.player[player - 1].max_illegal,
+        )
 
-        if not player_white:  # todo: handle fen
-            self.draw_game_board(board)
-            board.push(random.choice(list(board.legal_moves)))
+    def play(self, p1_white=True, retain=True, fen=""):
+        """Main function to run the chess game with interaction and model prediction. See init_game for effect of fen."""
+        # Initialize the self.board with the provided FEN or default to the start position
+        self.init_game(fen=fen, p1_white=p1_white)
 
-        while board.outcome() is None and game_over is None:
-            # Draw the board
-            self.draw_game_board(board)
+        if p1_white:
+            model_starts = self.players[0].player is not None
+        else:
+            model_starts = self.players[1].player is not None
 
-            move = self_move_fn(board)
-            if move is not None:
-                print(f"You played: {move}")
-            else:
-                print("You resigned.")
-                game_over = -1
-                if verbose:
-                    print(their_move_hist)
-                break
+        # initial move if model start
+        if model_starts:
+            self.draw_game_board()
+            self.board.push(random.choice(list(self.board.legal_moves)))
 
-            self.draw_game_board(board)
+        while (outcome := self.get_outcome()) is None:
+            # Draw the self.board
+            self.draw_game_board()
+            self.get_move()
+            self.turn += 1
 
-            # After making the move, ask the model for the next move
-            move = self.get_move_from_ai(
-                board,
-                max_tries=self._ai_illegal_attempts,
-                move_hist=False if not verbose else their_move_hist,
-            )
-            if move is not None:
-                print(f"{self.model_name} played: {move}")
-            else:
-                print(f"{self.model_name} resigned.")
-                game_over = 1
-                if verbose:
-                    print(their_move_hist)
+        # print(self.board.outcome(), self.game_over)
 
-        print(board.outcome(), game_over)
+        if not retain:
+            self.board = None
 
-        if return_board:
-            return get_outcome(), board
-        return get_outcome()
+        return outcome

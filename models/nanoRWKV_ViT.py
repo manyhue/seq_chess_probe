@@ -206,10 +206,10 @@ class Block(nn.Module):
 
 class RWKV_ViT(ClassifierModule):
     def __init__(self, config: GPT_ViTConfig):
+        self.c = config
         super().__init__()
         assert config.vocab_size is not None
         assert config.seq_len is not None
-        self.c = config
 
         self.transformer = nn.ModuleDict(
             dict(

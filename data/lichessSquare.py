@@ -80,7 +80,7 @@ class SquareData(ClassifierData):
         Returns:
             Dictionary containing 'game' and 'piece' lists
         """
-        move_strings, board = iter_to_move_strings(
+        move_strings, board = iter_to_moves(
             movetext_to_moves(movetext),
             seq_len=self.seq_len,
             return_board=True,

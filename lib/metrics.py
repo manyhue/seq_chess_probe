@@ -149,16 +149,13 @@ class MetricsFrame(Base):
         self,
         columns: List[Metric],
         flush_every=1,
-        index_fn: Callable = lambda batch_num, batches_per_epoch: np.float32(
-            batch_num / batches_per_epoch
-        ),
         name=None,
-        xlabel="epoch",  # not related to board
+        xlabel=None,  # not related to board
+        unit: Optional[int] = None,
         train=False,  # used to prefix when plotting
         out_device=torch.device("cpu"),
         pred_fun=_default_pred,
         logger=False,
-        plot_on_record=False,
         logging_prefix="",
     ):
         """_summary_
@@ -166,11 +163,9 @@ class MetricsFrame(Base):
         Args:
             columns (List[Metric]): Instance of torcheval.metrics.metric.Metric with a label property set
             flush_every (int, optional): _description_. Defaults to 1. Flush every n update calls. 0 to never flush.
-            index_fn (Callable, optional): _description_. Defaults to lambda batch_num, batches_per_epoch: np.float32(
-            batch_num / batches_per_epoch
-            plot_on_record (bool, optional): _description_. Defaults to False.
             name (str, optional): Metric frame name, used for plot title. Can be computed from columns by default.
-            xlabel (str, optional): Name of column of xlabel, used for plotting. Defaults to "epoch".
+            xlabel (str, optional): Name of column of xlabel, used for plotting. Defaults to "epoch" or "batch".
+            unit: If None, trainer will configure this frame so that all provided values are interpreted in epoch units. None behaves so that unit=num_train_batches in a Trainer with mf_epoch_units=True and 1 otherwise.
             train
             out_device
             pred_fun: defaults to lambda *args: (
@@ -191,15 +186,15 @@ class MetricsFrame(Base):
                 c.label = c.__class__.__name__
 
         self.dict = {col.label: [] for col in self.columns}
-        if xlabel is not None:
-            self.dict[xlabel] = []
+        if xlabel is None:
+            self.xlabel = "batch"  # Technically we could use "" or None to denote no xlabel after initialization xlabel is not None, but we use "" to denote no xlabel for clarity
+        if self.xlabel:
+            self.dict[self.xlabel] = []
 
         self.df = None
         self.board = None
 
-        # see set_flush_unit
         self._flush_every = flush_every
-        self._batches_per_epoch = None
 
     def append(self, *columns: Metric):
         assert all((v == [] for v in self.dict.values())) and self.df is None
@@ -216,34 +211,42 @@ class MetricsFrame(Base):
                 self.dict[to_label] = self.dict.pop(from_label)
                 break
 
-    def flush(self, index=None, log_metric=True):
+    def flush(self, idx=None, log_metric=True, keep_idx=False):
         """Computes and resets all columns.
         If self.logger is configured, will also log computed values (requires xlabel to be set).
+        Will use self._count for the idx by default, similar to update(). NOTE that you want
+        to be consistent between providing idx or not throughout these two functions.
+        Explicitly, using ._count allows us to accumulate statistics across multiple training steps.
+        Passing in the index explicitly allows continuing the index from continued training runs.
+        That is, choosing between one or the other depends on if you want to
+        reuse the metric frame (single graph) vs reuse the setup (multiple graphs).
 
         Args:
-            index (int): index to associate with row
+            idx (int): idx to associate with row
+            keep_idx (bool): Whether to scale idx by configured units.
         """
         should_log = log_metric and callable(self.logger)
         log_dict = {}
-        if index is None:
-            assert self.xlabel is None
+
         for c in self.columns:
             val = self.to_out(c.compute())
             self.dict[c.label].append(val)
             if should_log:
                 log_dict[self.logging_prefix + c.label] = val
             c.reset()
-        if self.xlabel is not None:
-            self.dict[self.xlabel].append(index)
+        if self.xlabel:
+            if not keep_idx:
+                idx = self.get_idx_per_unit(idx)
+            self.dict[self.xlabel].append(idx)
             if should_log:
-                log_dict[self.xlabel] = index
+                log_dict[self.xlabel] = idx
                 self.logger(log_dict)
 
     def compute(self):
         """Computes columns
 
         Args:
-            index (int): index to associate with row
+            idx (int): idx to associate with row
         """
         return {c.label: c.compute() for c in self.columns}
 
@@ -255,7 +258,7 @@ class MetricsFrame(Base):
         for c in self.columns:
             c.reset()
         self.dict = {col.label: [] for col in self.columns}
-        if self.xlabel is not None:
+        if self.xlabel:
             self.dict[self.xlabel] = []
 
         self.df = None
@@ -278,8 +281,17 @@ class MetricsFrame(Base):
             " (training)" if self.train else " (validation)"
         )
 
+    # refactored to allow easier override
+    def get_idx_per_unit(self, idx):
+        if (
+            self.unit is None or self.unit == 1
+        ):  # Default unit acts as 1, is this inefficient to check...
+            return idx or self._count
+        else:
+            return (idx or self._count) / self.unit
+
     @torch.inference_mode
-    def update(self, *args, batch_num=None):
+    def update(self, *args, idx=None):
         args = self.pred_fun(*args)
         for c in self.columns:
             c.update(*args)
@@ -287,18 +299,28 @@ class MetricsFrame(Base):
         self._count += 1
 
         if self._flush_every != 0 and self._count % self._flush_every == 0:
-            index = (
-                self._count
-                if self._batches_per_epoch is None and batch_num is None
-                else batch_num
-                if self._batches_per_epoch is None
-                else self.index_fn(batch_num, self._batches_per_epoch)
-            )  # maybe should not be optional
-            self.flush(index)
+            if not self.xlabel:
+                self.flush()
+            else:
+                self.flush(idx)
 
-    def set_flush_unit(self, batch_num):
-        self._flush_every = min(1, int(self.flush_every * batch_num))
-        self._batches_per_epoch = batch_num
+    def set_unit(
+        self, unit, xlabel, scale_flush_interval=True
+    ):  # trainer calls this with xlabel=epoch
+        if unit:
+            if scale_flush_interval:
+                self._flush_every = max(1, int(self.flush_every * unit))
+            self.unit = unit
+        if xlabel:
+            if self.xlabel:
+                self.dict[xlabel] = self.dict.pop(self.xlabel)
+            else:
+                assert all(
+                    isinstance(value, list) and not value
+                    for value in self.dict.values()
+                )  # should not set xlabel for initialized dict
+                self.dict[xlabel] = []
+            self.xlabel = xlabel
 
     def init_plot(self, title=None, **kwargs):
         """Convenience method to create a board linked to this to draw on"""
@@ -306,22 +328,23 @@ class MetricsFrame(Base):
         if self.board is None:
             logging.info(f"Creating plot for {self.name}")
             self.board = ProgressBoard(xlabel=self.xlabel, title=title, **kwargs)
-            self.board.add(self)
+            self.board.add_mf(self)
         return self.board
 
-    def plot(self, df=False):
+    def plot(self, df=False, kind="line"):
         """Plots our graph on our board"""
-        assert self.xlabel is not None
+        assert self.xlabel
         self.init_plot()
+        dbg(self.board)
 
         self.board.ax.clear()  # Clear off other graphs such as that may also be associated to our board.
         if df:  # draw dataframe
-            self.board._draw(self.df, self.xlabel)
+            self.board._draw(self.df, self.xlabel, update=True, kind=kind)
         else:
             logging.info(f"Displaying dictionary of {self.name}")
-            self.board._draw(self.dict, self.xlabel)
+            self.board._draw(self.dict, self.xlabel, update=True, kind=kind)
 
-    def record(self):
+    def record(self, plot=False):
         if getattr(self, "df") is None:
             self.df = pl.DataFrame(self.dict)
 
@@ -334,8 +357,8 @@ class MetricsFrame(Base):
                 "ShapeError encountered. One or more columns may not compute as scalars. Attempting overwrite of self.df."
             )
             self.df = new_df
-        if self.plot_on_record:
-            self.plot(df=True)
+            if plot:
+                self.plot(df=True)
         return self.df
 
 
@@ -365,22 +388,7 @@ class ProgressBoard(Base):
         ## Graphical params
         sns.set_style("whitegrid")
 
-        self.fig, self.ax = plt.subplots(
-            figsize=(width / 100, height / 100)
-        )  # Adjust size for Matplotlib
-
-        if not isinstance(interactive, bool):
-            self.interactive = is_notebook()
-        if self.interactive:
-            self.dh = IPython.display.display(self.fig, display_id=True)
-
-        # Set log scaling based on the provided xscale and yscale
-        if xscale == "log":
-            self.ax.set_xscale("log")
-        if yscale == "log":
-            self.ax.set_yscale("log")
-        if title:
-            self.ax.set_title(title)
+        self.init_plot()
 
         ## Initialize data structures
         assert draw_every >= 1
@@ -407,7 +415,6 @@ class ProgressBoard(Base):
         self._clear_buffer()
 
         ## Further config
-        plt.close()
 
         # legend_labels = []
         # for orbit in self.data['Label'].unique():
@@ -416,25 +423,79 @@ class ProgressBoard(Base):
         # handles, _ = self.ax.get_legend_handles_labels()
         # self.ax.legend(handles, legend_labels, loc="lower left", bbox_to_anchor=(1.01, 0.29), title="Orbit")
 
+    def init_plot(self):
+        if (fig := getattr(self, "fig", None)) is not None:
+            plt.close(fig)
+        self.fig, self.ax = plt.subplots(
+            figsize=(self.width / 100, self.height / 100)
+        )  # Adjust size for Matplotlib
+
+        if not isinstance(self.interactive, bool):
+            self.interactive = is_notebook()
+        if self.interactive:
+            self.dh = IPython.display.display(self.fig, display_id=True)
+            plt.close()  # ipython ipdate handles the plot
+
+        # Set log scaling based on the provided xscale and yscale
+        if self.xscale == "log":
+            self.ax.set_xscale("log")
+        if self.yscale == "log":
+            self.ax.set_yscale("log")
+        if self.title:
+            self.ax.set_title(self.title)
+
     def _redef_ax(self):
         self.ax.set_ylabel(self.ylabel)
         self.ax.set_title(self.title)
         self.ax.set_yscale(self.yscale)
 
-    def _draw(self, data, xlabel):
+    def _draw(self, data, xlabel, update=False, kind="line"):
+        # not sure how to handle overlapping lines
         if isinstance(data, pl.DataFrame):
             for col in data.columns:
                 if col != xlabel:
-                    sns.lineplot(
-                        x=xlabel, y=data[col], label=col, data=data, ax=self.ax
-                    )
+                    if kind == "scatter":
+                        sns.scatterplot(
+                            x=xlabel,
+                            y=data[col],
+                            label=col,
+                            data=data,
+                            ax=self.ax,
+                        )
+                    else:
+                        sns.lineplot(
+                            x=xlabel,
+                            y=data[col],
+                            label=col,
+                            data=data,
+                            ax=self.ax,
+                        )
         elif isinstance(data, Dict):
-            for col in data.keys():
+            for i, col in enumerate(data.keys()):
                 if col != xlabel and data[col]:
-                    sns.lineplot(x=xlabel, y=col, label=col, data=data, ax=self.ax)
+                    if kind == "scatter":
+                        sns.scatterplot(
+                            x=xlabel,
+                            y=col,
+                            label=col,
+                            data=data,
+                            ax=self.ax,
+                        )
+                    else:
+                        sns.lineplot(
+                            x=xlabel,
+                            y=col,
+                            label=col,
+                            data=data,
+                            linewidth=1.5 - 0.2 * i,
+                            ax=self.ax,
+                        )
         else:
             raise TypeError
-        self._redef_ax()
+
+        if update:
+            self._redef_ax()
+            self.iupdate()
 
     def draw_mfs(self, force=False):
         self._count += 1
@@ -531,17 +592,157 @@ class ProgressBoard(Base):
             self.dh.update(self.fig)
 
 
-def plot_2dheatmap(arr, close_last=True, **kwargs):
+# plot 2d array
+
+
+def plot_2dheatmap(arr, close_last=True, ticklabels="auto", **kwargs):
     # if close_last:  # useful for single plots
     #     plt.close("all")
+    # alternative to using plt.subplots because sns uses gca() as default ax
     plt.figure()
     sns.heatmap(
         [[int(el) for el in row] for row in arr],
         annot=True,
         fmt=".2f",
         cmap="Blues",
+        xticklabels=ticklabels,
+        yticklabels=ticklabels,
+        ax=plt.gca(),
     )
     kwargs.setdefault("xlabel", "Predicted")
     kwargs.setdefault("ylabel", "Ground truth")
     plt.gca().set(**kwargs)
+    plt.show()
+
+
+def plot_hist(list, kde=True, **kwargs):
+    plt.figure()
+    binwidth = 1 if isinstance(list[0], int) else None
+    sns.histplot(list, binwidth=binwidth, kde=False)
+    kwargs.setdefault("xlabel", "Value")
+    kwargs.setdefault("ylabel", "Count")
+    plt.gca().set(**kwargs)
+
+
+def plot_bar(
+    dict, stack_label="variant", xlabel="class", ylabel="count", x_rot=0, **kwargs
+):
+    fig, ax = plt.subplots()
+
+    if isinstance(next(iter(dict.keys())), tuple):
+        df = pd.DataFrame(list(dict.items()), columns=["Tuple", "Count"])
+        df[["a", stack_label]] = pd.DataFrame(df["Tuple"].tolist(), index=df.index)
+
+        # Pivot the DataFrame to get counts by 'a' and 'b'
+        pivot_df = df.pivot_table(
+            index="a", columns=stack_label, values="Count", aggfunc="sum", fill_value=0
+        )
+        # Plot a stacked bar chart
+        pivot_df.plot(kind="bar", stacked=True, rot=x_rot, ax=ax)
+        # ax.tick_params(axis="x", rotation=0) doesn't work
+    else:
+        sns.barplot(dict)
+
+    kwargs.setdefault("xlabel", "Class")
+    kwargs.setdefault("ylabel", "Count")
+    ax.set(**kwargs)
+    plt.show()
+
+
+# plot dict
+
+
+# def plot_points(*point_lists, default_time=None, **kwargs):
+#     for point_list in point_lists:
+#         if isinstance(point_list[0], tuple):
+#             data_points, time_values = zip(*point_list)
+#             plt.plot(time_values, data_points)
+#         else:
+#             time = (
+#                 default_time[: len(point_list)]
+#                 if default_time is not None
+#                 else np.arange(1, len(point_list) + 1)
+#             )
+#             plt.plot(time, point_list)  # Plot with range on x-axis
+
+#     kwargs.setdefault("xlabel", "Value")
+#     kwargs.setdefault("ylabel", "Index")
+#     plt.gca().set(**kwargs)
+
+#     # Show the plot
+#     plt.show()
+
+
+def plot_points(
+    *point_lists,
+    kind="scatter",  # or line
+    default_time=None,
+    set_labels=None,
+    **kwargs,
+):
+    fig, ax = plt.subplots()
+    kwargs.setdefault("xlabel", "Value")
+    kwargs.setdefault("ylabel", "Index")
+    legend = "Legend"
+
+    all_data = []
+
+    set_labels = set_labels or [f"Set{i}" for i in range(len(point_lists))]
+
+    for point_list, label in zip(point_lists, set_labels):
+        if len(point_list) == 0:
+            if vb(7):
+                print("label is empty")
+            continue
+        if isinstance(point_list[0], tuple):
+            data_points, time_values = zip(*point_list)
+            df = pd.DataFrame(
+                {
+                    kwargs["xlabel"]: time_values,
+                    kwargs["ylabel"]: data_points,
+                    legend: [label] * len(point_list),
+                }
+            )
+        else:
+            time = (
+                default_time[: len(point_list)]
+                if default_time is not None
+                else np.arange(1, len(point_list) + 1)
+            )
+            df = pd.DataFrame(
+                {
+                    kwargs["xlabel"]: time,
+                    kwargs["ylabel"]: point_list,
+                    legend: [label] * len(point_list),
+                }
+            )
+
+        all_data.append(df)
+
+    combined_df = pd.concat(all_data)
+
+    # Plot using Seaborn
+    if kind == "scatter":
+        sns.scatterplot(
+            data=combined_df,
+            x=kwargs["xlabel"],
+            y=kwargs["ylabel"],
+            hue=legend,
+            style=legend,
+            ax=ax,
+        )  # s=100 for size
+    else:
+        sns.lineplot(
+            data=combined_df,
+            x=kwargs["xlabel"],
+            y=kwargs["ylabel"],
+            hue=legend,
+            style=legend,
+            ax=ax,
+        )
+    # alternatively relplot creates its own figure
+
+    ax.set(**kwargs)
+
+    # Show the plot
     plt.show()

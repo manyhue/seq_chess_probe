@@ -205,10 +205,10 @@ class Block(nn.Module):
 
 class RWKV(ClassifierModule):
     def __init__(self, config: GPTConfig):
+        self.save_config(config)
         super().__init__()
         assert config.vocab_size is not None
         assert config.seq_len is not None
-        self.c = config
 
         self.transformer = nn.ModuleDict(
             dict(

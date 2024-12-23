@@ -101,6 +101,7 @@ class ClassifierModule(Module):
         self.ignore_index = getattr(
             self, "ignore_index", -100
         )  # https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html
+        self.c._del("ignore_index", warn=False)  # drop from filename
 
     def loss(self, outputs, Y, averaged=True):
         outputs = outputs.reshape(-1, outputs.shape[-1])

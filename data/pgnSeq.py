@@ -58,7 +58,7 @@ class StreamingPGNDataset(IterableDataset, Base):
                         break
                     if "FEN" in game.headers:
                         continue
-                    yield iter_to_move_strings(
+                    yield iter_to_moves(
                         game.mainline_moves(), self.seq_len, pad_token
                     )  # todo: what sort of exceptions to handle?
 
@@ -77,7 +77,7 @@ class StreamingPGNDataset(IterableDataset, Base):
             self.files[iter_start:iter_end],
             pad_token="<PAD>",  # todo: how to configure pad_token
         ):
-            yield (torch.tensor(self.le.transform(result)),)
+            yield (moves_to_torch(result),)
 
 
 @dataclass(kw_only=True)

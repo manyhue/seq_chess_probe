@@ -50,7 +50,7 @@ class StreamingPGNSkillDataset(IterableDataset, Base):
                         break
                     if "FEN" in game.headers:
                         continue
-                    moves = iter_to_move_strings(
+                    moves = iter_to_moves(
                         game.mainline_moves(), self.seq_len, pad_token
                     )
 

@@ -4,18 +4,10 @@ from lib.optim import WarmupCosineLR
 from lib.train import Trainer
 from typing import override
 
+from lib.utils import dbg
 
-class SeqTrainer(Trainer):
-    @override
-    def prepare_batch(self, batch):
-        if self.gpus:
-            # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
-            batch = batch[0].pin_memory().to(self.device, non_blocking=True)
-            # batch = batch[0].to(self.device)
-        else:
-            batch = batch[0].to(self.device)
-        return batch[:, :-1], batch[:, 1:]
 
+class GPTTrainer(Trainer):
     # from nanogpt
     @override
     def prepare_optimizer(self, weight_decay, learning_rate, betas, device_type):
@@ -50,7 +42,19 @@ class SeqTrainer(Trainer):
         self.sched = WarmupCosineLR(
             self.optim,
             warmup_iters=200,
-            min_lr=6e-6,
-            lr_decay_iters=10000,
+            min_lr=6e-7,
+            lr_decay_iters=2000000,
             lr=self.lr,
         )
+
+
+class SeqTrainer(GPTTrainer):
+    @override
+    def prepare_batch(self, batch):
+        if self.gpus:
+            # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
+            batch = batch[0].pin_memory().to(self.device, non_blocking=True)
+            # batch = batch[0].to(self.device)
+        else:
+            batch = batch[0].to(self.device)
+        return batch[:, :-1], batch[:, 1:]

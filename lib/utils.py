@@ -120,6 +120,15 @@ class Config:
     def dict(self, include_none=False):
         return {k: v for k, v in asdict(self).items() if include_none or v is not None}
 
+    # a hack disguising the fact that we diverge from __dataclass_fields__, but its just for updating dict()
+    # not sure about whether del self.__dict__[key] does anything
+    def _del(self, key, warn=True):
+        if key in self.__dict__:
+            setattr(self, key, None)
+        else:
+            if warn:
+                print(f"Warning: Key '{key}' not found.")
+
 
 class Base:
     def save_parameters(self, ignore=[]):

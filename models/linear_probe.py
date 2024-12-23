@@ -16,8 +16,8 @@ class ProbeConfig(Config):
 
 class LinearProbe(ClassifierModule):
     def __init__(self, model, target_layer, c: ProbeConfig):
-        super().__init__()
         self.save_config(c)
+        super().__init__()
         self.model = model
         # freeze layers
         for param in model.parameters():
