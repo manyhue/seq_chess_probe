@@ -1,0 +1,58 @@
+[project]
+authors = ["Rui Yi Zhang <squirreljetpacks@gmail.com>"]
+channels = ["conda-forge", "huggingface"]
+description = "Add a short description here"
+name = "A3"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[system-requirements]
+cuda = "12.6"
+
+[tasks]
+nb = "jupyter notebook" # --notebook-dir doesn't work
+
+
+[pypi-dependencies]
+torcheval = ">=0.0.7,<0.0.8"
+torch-nibs = { path = "/home/archr/gh/torch_nib", editable = true}
+# torch-nibs = "*"
+
+[environments]
+# test = {features = ["test"], solve-group = "default"}
+# docs = {features = ["docs"], solve-group = "default"}
+default = {features = [], solve-group = "default"}
+dev = {features = ["dev"], solve-group = "default"}
+
+[feature.dev.dependencies]
+pytest = "*"
+
+
+[dependencies]
+
+# Data
+polars = "*"
+
+# Training
+wandb = "*"
+
+# Docs
+jupyter = "*"
+pip = "*"
+ipympl = "*"
+
+# plotting
+plotly = "*"
+tqdm = "*"
+seaborn = ">=0.13.2,<0.14"
+scikit-learn = ">=1.5.2,<2"
+openpyxl = ">=3.1.5,<4"
+fastexcel = ">=0.12.0,<0.13"
+pandas = ">=2.2.3,<3"
+jupyter_console = ">=6.6.3,<7"
+
+chess = ">=1.11.0,<2"
+datasets = { channel = "huggingface" }
+pytorch = ">=2.5.1,<3"
+torchvision = ">=0.20.1,<0.21"
+torchaudio = ">=2.5.1,<3"

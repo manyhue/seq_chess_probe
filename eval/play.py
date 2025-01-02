@@ -2,8 +2,8 @@ import random
 from typing import Callable, List, Optional, Any, Union
 import chess
 from lib.chess import iter_to_moves, chess_move_labels, moves_to_torch
-from lib.utils import Base, dbg, is_notebook, vb
-from lib.modules import Module
+from tnibs.utils import Base, dbg, is_notebook, vb
+from tnibs.modules import Module
 
 # just for names
 class ChessPlayer(Base):

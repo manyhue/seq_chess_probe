@@ -7,3 +7,6 @@ resources/**/*.parquet
 resources/extra
 out
 .mise.toml
+# pixi environments
+.pixi
+*.egg-info

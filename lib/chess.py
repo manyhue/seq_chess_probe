@@ -7,7 +7,7 @@ import io
 
 import torch
 
-from lib.utils import dbg, vb
+from tnibs.utils import vb
 
 # a move is piece+uci string
 

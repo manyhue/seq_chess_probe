@@ -7,13 +7,12 @@ from torch.utils.data import IterableDataset
 import numpy as np
 from sklearn.preprocessing import LabelEncoder
 from lib.chess import *
-from lib.data import ClassifierData, DataConfig
+from tnibs.data import ClassifierData, DataConfig
 from datasets import load_dataset
 
 pieces = ["K", "Q", "N", "R", "B", "P"]
 
 
-@dataclass(kw_only=True)
 class SquareDataConfig(DataConfig):
     seq_len: int = 129
     square: chess.Square = chess.E4

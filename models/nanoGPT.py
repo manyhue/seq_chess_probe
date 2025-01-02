@@ -18,8 +18,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from lib.modules import ClassifierModule, SmoothClassifierModule
-from lib.utils import Config, dbg
+from tnibs.modules import ClassifierModule
+from tnibs.utils import Config
 
 
 class LayerNorm(nn.Module):
@@ -138,13 +138,12 @@ class Block(nn.Module):
         return x
 
 
-@dataclass(kw_only=True)
 class GPTConfig(Config):
     seq_len: int = 1024
     vocab_size: int = 50304  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
     n_layer: int = 12
-    n_head: int = 12
-    n_embd: int = 768
+    n_head: int = 8
+    n_embd: int = 512
     dropout: float = 0.0
     bias: bool = True  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     ignore_index: Optional[int] = 0

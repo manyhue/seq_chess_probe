@@ -9,10 +9,10 @@ from torch.utils.data import IterableDataset
 import numpy as np
 from sklearn.preprocessing import LabelEncoder
 from lib.chess import *
-from lib.data import ClassifierData, DataConfig
+from tnibs.data import ClassifierData, DataConfig
 from datasets import load_dataset
 
-from lib.utils import Base
+from tnibs.utils import Base
 
 
 class StreamingPGNSkillDataset(IterableDataset, Base):
@@ -70,7 +70,6 @@ class StreamingPGNSkillDataset(IterableDataset, Base):
                     print("Err:", result)
 
 
-@dataclass(kw_only=True)
 class PGNSkillDataConfig(DataConfig):
     seq_len: int = 128
     directory: str = "resources/binned"

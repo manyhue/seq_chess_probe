@@ -8,8 +8,8 @@ import torch
 import tqdm
 import zstandard
 from dataclasses import dataclass
-from lib.data import DataConfig, ClassifierData
-from lib.utils import Base
+from tnibs.data import DataConfig, ClassifierData
+from tnibs.utils import Base
 from lib.chess import *
 
 
@@ -80,7 +80,6 @@ class StreamingPGNDataset(IterableDataset, Base):
             yield (moves_to_torch(result),)
 
 
-@dataclass(kw_only=True)
 class PGNDataConfig(DataConfig):
     seq_len: int = 128
     files_per_epoch: int = 1000

@@ -1,15 +1,14 @@
 from dataclasses import dataclass
 
 import torch
-from lib.modules import ClassifierModule
+from tnibs.modules import ClassifierModule
 import torch.nn as nn
 
-from lib.optim import WarmupCosineLR
-from lib.train import Trainer
-from lib.utils import Config
+from tnibs.train.optim import WarmupCosineLR
+from tnibs.train import Trainer
+from tnibs.utils import Config
 
 
-@dataclass(kw_only=True)
 class ProbeConfig(Config):
     n_classes: int = 1024
 

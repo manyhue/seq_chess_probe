@@ -18,8 +18,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from lib.modules import ClassifierModule, SmoothClassifierModule
-from lib.utils import Config, dbg
+from tnibs.modules import ClassifierModule
+from tnibs.utils import Config, dbg
 
 
 class LayerNorm(nn.Module):
@@ -138,7 +138,6 @@ class Block(nn.Module):
         return x
 
 
-@dataclass(kw_only=True)
 class GPT_ViTConfig(Config):
     seq_len: int = 1024
     vocab_size: int  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency

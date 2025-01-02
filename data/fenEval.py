@@ -1,9 +1,9 @@
-from lib.utils import *
-from lib.data import ClassifierData, DataConfig
+from tnibs.utils import *
+from tnibs.data import ClassifierData, DataConfig
 from sklearn.model_selection import KFold
 from lib.chess import fen_labels
 import torch.utils.data as td
-
+import polars as pl
 
 class FENEval(ClassifierData):
     def __init__(self, c: DataConfig):

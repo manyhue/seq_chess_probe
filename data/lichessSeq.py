@@ -4,11 +4,10 @@ from torch.utils.data import IterableDataset
 import numpy as np
 from sklearn.preprocessing import LabelEncoder
 from lib.chess import *
-from lib.data import ClassifierData, DataConfig
+from tnibs.data import ClassifierData, DataConfig
 from datasets import load_dataset
 
 
-@dataclass(kw_only=True)
 class PGNDataConfig(DataConfig):
     seq_len: int = 129
 
